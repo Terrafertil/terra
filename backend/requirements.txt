@@ -1,0 +1,23 @@
+# Versões compatíveis com Python 3.11+ (inclui wheels cp314 para Windows sem MSVC).
+fastapi>=0.115.0,<0.116
+uvicorn[standard]>=0.32.0,<0.33
+sqlalchemy>=2.0.35,<3
+pydantic[email]>=2.12.0,<3
+pydantic-settings>=2.5.2,<3
+email-validator>=2.2.0
+python-multipart>=0.0.12
+python-dotenv>=1.0.1
+pdfplumber>=0.11.4
+pypdf>=5.0.1
+passlib[bcrypt]>=1.7.4
+# passlib 1.7.4 não suporta bcrypt 5.x (__about__ removido); manter <5.
+bcrypt>=4.1.1,<5
+python-jose[cryptography]>=3.3.0
+cryptography>=42.0.0
+watchdog>=5.0.3
+aiosmtplib>=3.0.2
+jinja2>=3.1.4
+# OCR opcional (PDF só imagem) — requer Tesseract instalado no SO
+pymupdf>=1.24.0
+pytesseract>=0.3.10
+Pillow>=10.0.0

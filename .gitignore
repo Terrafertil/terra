@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Intranet (gerado por preparar-intranet.ps1)
+tools/caddy/
+frontend/registrar-hostname-nos-pcs.bat
+
+# Env
+.env
+backend/.env
+frontend/.env
+!*.env.example
+
+# Capa PDF local (modelo fica em backend/capas/README.txt)
+backend/capas/*.pdf
+
+# Dados
+backend/data/
+backend/backup/
+backend/uploads/
+backend/processados/
+backend/entrada/
+backend/logs/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
