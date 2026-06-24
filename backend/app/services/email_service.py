@@ -1,8 +1,8 @@
 """Envio de e-mail via SMTP (síncrono).
 
-Produção com Brevo: configure USE_BREVO=true e o relay SMTP (smtp-relay.brevo.com),
-SMTP_USER + SMTP_PASSWORD (chave SMTP do painel). A API de *campanhas* do SDK Brevo
-não substitui este fluxo — ela não envia apólice em anexo para um destinatário por vez.
+Produção com AWS SES: configure USE_AWS_SES=true, AWS_SES_REGION e credenciais SMTP
+geradas no console SES (SMTP settings). O sistema envia apólice em anexo por SMTP —
+não usa API de campanhas nem SDK boto3 neste fluxo.
 
 Suporta:
 - Corpo HTML customizado por TipoEnvio (com placeholders {{ var }})

@@ -51,7 +51,7 @@ Edite o arquivo de configuração do backend:
 C:\envio-sistema\backend\.env
 ```
 Ajuste principalmente:
-- `SMTP_*` (credenciais do e-mail)
+- `SMTP_*` / `AWS_SES_*` (credenciais do Amazon SES)
 - `FULL_WATCH_FOLDER` (pasta que o watcher vai varrer)
 - `ADMIN_PASSWORD` (senha inicial do admin)
 

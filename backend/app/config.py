@@ -47,32 +47,37 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: str = "*"
 
-    # SMTP (Brevo: use o relay SMTP com chave SMTP — não a API de “campanhas”, que é para listas sem anexo)
+    # SMTP (AWS SES — relay SMTP com anexo PDF; não usa SDK boto3)
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_user: str = Field(
         default="",
-        validation_alias=AliasChoices("SMTP_USER", "BREVO_SMTP_LOGIN"),
+        validation_alias=AliasChoices("SMTP_USER", "AWS_SES_SMTP_USER"),
     )
     smtp_password: str = Field(
         default="",
-        validation_alias=AliasChoices("SMTP_PASSWORD", "BREVO_SMTP_KEY"),
+        validation_alias=AliasChoices("SMTP_PASSWORD", "AWS_SES_SMTP_PASSWORD"),
     )
     smtp_use_tls: bool = True
     smtp_from_email: str = Field(
         default="",
-        validation_alias=AliasChoices("SMTP_FROM_EMAIL", "BREVO_SENDER_EMAIL"),
+        validation_alias=AliasChoices("SMTP_FROM_EMAIL", "AWS_SES_FROM_EMAIL"),
     )
     smtp_from_name: str = Field(
         default="Sistema de Envio",
-        validation_alias=AliasChoices("SMTP_FROM_NAME", "BREVO_SENDER_NAME"),
+        validation_alias=AliasChoices("SMTP_FROM_NAME", "AWS_SES_FROM_NAME"),
     )
-    use_brevo: bool = False
+    use_aws_ses: bool = False
+    aws_ses_region: str = Field(
+        default="sa-east-1",
+        validation_alias=AliasChoices("AWS_SES_REGION", "AWS_REGION"),
+    )
 
     @model_validator(mode="after")
-    def _defaults_brevo(self):
-        if self.use_brevo and not (self.smtp_host or "").strip():
-            self.smtp_host = "smtp-relay.brevo.com"
+    def _defaults_aws_ses(self):
+        if self.use_aws_ses and not (self.smtp_host or "").strip():
+            reg = (self.aws_ses_region or "sa-east-1").strip()
+            self.smtp_host = f"email-smtp.{reg}.amazonaws.com"
             self.smtp_port = 587
             self.smtp_use_tls = True
         return self

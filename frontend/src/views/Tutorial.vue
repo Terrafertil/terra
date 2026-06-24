@@ -293,7 +293,7 @@ const passos = [
       <ul class="tutorial-lista mt-2">
         <li>PDF com senha no FULL — use ficheiro <code>.senha</code> ou envio manual.</li>
         <li>Cliente não encontrado no FULL — confira se o CPF no cadastro é igual ao do PDF.</li>
-        <li>E-mail não sai — verifique corpo de e-mail no tipo de envio e SMTP no servidor (ver instalador).</li>
+        <li>E-mail não sai — verifique corpo de e-mail no tipo de envio e AWS SES (SMTP) no servidor.</li>
       </ul>
     </section>
   </div>
