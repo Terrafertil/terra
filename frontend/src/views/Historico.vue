@@ -179,7 +179,7 @@ onMounted(carregar)
             <td>{{ new Date(e.criado_em).toLocaleString() }}</td>
             <td>
               <button
-                v-if="e.status === 'erro' && e.caminho_backup"
+                v-if="e.status === 'erro' && e.pode_reenviar"
                 class="btn btn-sm btn-ghost"
                 :disabled="reenviandoId === e.id"
                 @click="reenviarUm(e)"

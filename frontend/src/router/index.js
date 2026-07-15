@@ -24,11 +24,11 @@ const routes = [
       { path: 'clientes',   name: 'clientes',   component: () => import('../views/Clientes.vue') },
       { path: 'autos',      name: 'autos',      component: () => import('../views/Autos.vue') },
       { path: 'envio',      name: 'envio',      component: () => import('../views/EnvioManual.vue') },
-      { path: 'full-config',name: 'fullConfig', component: () => import('../views/FullConfig.vue') },
-      { path: 'tipos-envio',name: 'tiposEnvio', component: () => import('../views/TiposEnvio.vue') },
-      { path: 'corpos-email', name: 'corposEmail', component: () => import('../views/CorposEmail.vue') },
-      { path: 'assinaturas', name: 'assinaturas', component: () => import('../views/Assinaturas.vue') },
-      { path: 'capa',       name: 'capa',       component: () => import('../views/Capa.vue') },
+      { path: 'full-config',name: 'fullConfig', component: () => import('../views/FullConfig.vue'), meta: { requiresAdmin: true } },
+      { path: 'tipos-envio',name: 'tiposEnvio', component: () => import('../views/TiposEnvio.vue'), meta: { requiresAdmin: true } },
+      { path: 'corpos-email', name: 'corposEmail', component: () => import('../views/CorposEmail.vue'), meta: { requiresAdmin: true } },
+      { path: 'assinaturas', name: 'assinaturas', component: () => import('../views/Assinaturas.vue'), meta: { requiresAdmin: true } },
+      { path: 'capa',       name: 'capa',       component: () => import('../views/Capa.vue'), meta: { requiresAdmin: true } },
       {
         path: 'backup',
         name: 'backup',
@@ -58,29 +58,29 @@ router.beforeEach(async (to) => {
     try {
       await auth.carregarStatus()
     } catch { /* backend offline */ }
-    auth.restaurarSessao()
+    await auth.restaurarSessao()
     auth._loaded = true
   }
 
   if (to.meta.passwordChangeOnly) {
     if (!auth.authEnabled) return { name: 'dashboard' }
-    if (!auth.token) return { name: 'login', query: { redirect: '/trocar-senha' } }
+    if (!auth.user) return { name: 'login', query: { redirect: '/trocar-senha' } }
     if (!auth.mustChangePassword) return { name: 'dashboard' }
     return true
   }
 
   if (to.meta.public) {
-    if (to.name === 'login' && auth.authEnabled && auth.token && auth.mustChangePassword) {
+    if (to.name === 'login' && auth.authEnabled && auth.user && auth.mustChangePassword) {
       return { name: 'trocarSenha' }
     }
-    if (to.name === 'login' && auth.authEnabled && auth.token && !auth.mustChangePassword) {
+    if (to.name === 'login' && auth.authEnabled && auth.user && !auth.mustChangePassword) {
       return { name: 'dashboard' }
     }
     return true
   }
 
   if (!auth.authEnabled) return true
-  if (!auth.token) return { name: 'login', query: { redirect: to.fullPath } }
+  if (!auth.user) return { name: 'login', query: { redirect: to.fullPath } }
   if (auth.mustChangePassword) return { name: 'trocarSenha' }
 
   if (to.meta.requiresAdmin) {

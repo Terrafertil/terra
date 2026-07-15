@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import logging
 import secrets
+import time
 from functools import lru_cache
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -32,6 +33,30 @@ def backend_access_enabled() -> bool:
 
 def validate_security_config() -> None:
     """Falha rápido na subida se produção estiver mal configurada."""
+    host = (settings.app_host or "").strip().lower()
+    local_only = host in {"127.0.0.1", "localhost", "::1"}
+    if not settings.auth_enabled and not local_only and not settings.app_debug:
+        raise RuntimeError(
+            "AUTH_ENABLED=false so e permitido com APP_HOST local ou APP_DEBUG=true."
+        )
+    if settings.auth_enabled and settings.cors_list == ["*"]:
+        raise RuntimeError("CORS_ORIGINS=* nao e permitido com autenticacao ativa.")
+    if settings.auth_enabled and not local_only:
+        weak_values = {
+            "",
+            "admin",
+            "troque-essa-chave",
+            "troque-essa-chave-em-producao-32-bytes-minimo",
+            "tfd1r3t0r2026",
+        }
+        secret = (settings.secret_key or "").strip()
+        if len(secret) < 32 or secret.lower() in weak_values:
+            raise RuntimeError("SECRET_KEY deve ser aleatoria e ter pelo menos 32 caracteres.")
+        if (settings.admin_password or "").strip().lower() in weak_values:
+            raise RuntimeError("ADMIN_PASSWORD padrao ou vazia nao e permitida em producao.")
+        if (settings.diretor_password or "").strip().lower() in weak_values:
+            raise RuntimeError("DIRETOR_PASSWORD padrao ou vazia nao e permitida em producao.")
+
     if backend_access_enabled():
         key = (settings.backend_access_key or "").strip()
         if len(key) < 32:
@@ -44,6 +69,8 @@ def validate_security_config() -> None:
             raise RuntimeError(
                 "DATA_ENCRYPTION_ENABLED=true exige DATA_ENCRYPTION_PASSWORD com pelo menos 8 caracteres."
             )
+        if not local_only and pwd == "@Nt1p@r1d@d3":
+            raise RuntimeError("DATA_ENCRYPTION_PASSWORD padrao nao e permitida em producao.")
 
 
 def verify_backend_access(provided: str | None) -> bool:
@@ -53,7 +80,37 @@ def verify_backend_access(provided: str | None) -> bool:
     supplied = (provided or "").strip()
     if not expected or not supplied:
         return False
+    if supplied.startswith("bat1:"):
+        try:
+            _, timestamp, signature = supplied.split(":", 2)
+            issued_at = int(timestamp)
+        except (TypeError, ValueError):
+            return False
+        max_age = max(300, settings.access_token_expire_minutes * 60)
+        now = int(time.time())
+        if issued_at > now + 60 or now - issued_at > max_age:
+            return False
+        expected_signature = hmac.new(
+            settings.secret_key.encode("utf-8"),
+            f"backend-access:{timestamp}:{expected}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return secrets.compare_digest(signature, expected_signature)
     return secrets.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8"))
+
+
+def create_backend_access_cookie_token() -> str:
+    """Cria prova temporÃ¡ria sem guardar a chave compartilhada no navegador."""
+    if not backend_access_enabled():
+        return ""
+    timestamp = str(int(time.time()))
+    expected = (settings.backend_access_key or "").strip()
+    signature = hmac.new(
+        settings.secret_key.encode("utf-8"),
+        f"backend-access:{timestamp}:{expected}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"bat1:{timestamp}:{signature}"
 
 
 @lru_cache(maxsize=1)

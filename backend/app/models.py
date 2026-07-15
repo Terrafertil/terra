@@ -127,10 +127,17 @@ class Envio(Base):
     tipo_codigo: Mapped[str | None] = mapped_column(String(60), nullable=True, index=True)
     nome_arquivo_original: Mapped[str | None] = mapped_column(String(500), nullable=True)
     nome_arquivo_final: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    nome_boleto: Mapped[str | None] = mapped_column(String(500), nullable=True)
     numero_apolice: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(20), default="pendente")
     erro_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
     caminho_backup: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    caminho_backup_boleto: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    arquivo_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    delivery_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    delivery_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     assunto_email: Mapped[str | None] = mapped_column(String(500), nullable=True)
     assinatura_id: Mapped[int | None] = mapped_column(
         ForeignKey("assinaturas.id"), nullable=True
@@ -212,4 +219,5 @@ class Usuario(Base):
     recovery_token_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     acesso_backup: Mapped[bool] = mapped_column(Boolean, default=False)
     ativo: Mapped[bool] = mapped_column(Boolean, default=True)
+    session_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

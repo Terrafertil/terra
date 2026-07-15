@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from .. import models, schemas
-from ..auth import require_user
+from ..auth import require_user, require_admin
 
 
 router = APIRouter(prefix="/api/autos", tags=["autos"])
@@ -106,7 +106,7 @@ def atualizar(
 
 
 @router.delete("/{aid}", status_code=204)
-def remover(aid: int, db: Session = Depends(get_db), _=Depends(require_user)):
+def remover(aid: int, db: Session = Depends(get_db), _=Depends(require_admin)):
     a = db.get(models.Auto, aid)
     if not a:
         raise HTTPException(404, "Auto não encontrado")

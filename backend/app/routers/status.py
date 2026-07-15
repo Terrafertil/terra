@@ -5,7 +5,8 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..config import settings
 from .. import models, schemas
-from ..auth import require_user
+from .. import APP_VERSION
+from ..auth import require_user, require_admin
 from ..services import notificacoes_service, ocr_service
 from ..services.data_crypto_service import backend_access_enabled, encryption_enabled
 from ..services import soc_service
@@ -14,7 +15,7 @@ from ..services import soc_service
 router = APIRouter(prefix="/api", tags=["status"])
 
 
-def _montar_status(db: Session) -> schemas.StatusOut:
+def _montar_status(db: Session, *, expose_paths: bool = False) -> schemas.StatusOut:
     rc = db.get(models.RuntimeConfig, 1)
     env_on = settings.full_enabled
     scan_active = rc.full_scan_active if rc else True
@@ -27,14 +28,18 @@ def _montar_status(db: Session) -> schemas.StatusOut:
     soc = soc_service.soc_status(db)
     return schemas.StatusOut(
         status="ok",
-        versao="1.0.0",
+        versao=APP_VERSION,
         auth_enabled=settings.auth_enabled,
+        email_provider=settings.email_provider,
+        email_configured=settings.email_configured,
         full_enabled=effective,
         full_env_enabled=env_on,
         full_scan_active=scan_active,
         full_scan_interval_seconds=interval,
         full_scan_exec_time=exec_time,
-        full_watch_folder=str(settings.data_path(settings.full_watch_folder)),
+        full_watch_folder=(
+            str(settings.data_path(settings.full_watch_folder)) if expose_paths else ""
+        ),
         full_lote_size=rc.full_lote_size if rc else settings.full_lote_size,
         full_intervalo_lote_min=rc.full_intervalo_lote_min if rc else settings.full_intervalo_lote_min,
         full_rescan_horas=rc.full_rescan_horas if rc else settings.full_rescan_horas,
@@ -51,15 +56,15 @@ def _montar_status(db: Session) -> schemas.StatusOut:
 
 
 @router.get("/status", response_model=schemas.StatusOut)
-def status(db: Session = Depends(get_db)):
-    return _montar_status(db)
+def status(db: Session = Depends(get_db), user=Depends(require_user)):
+    return _montar_status(db, expose_paths=bool(user.is_admin))
 
 
 @router.patch("/settings/full", response_model=schemas.StatusOut)
 def atualizar_full_runtime(
     body: schemas.FullRuntimePatch,
     db: Session = Depends(get_db),
-    _=Depends(require_user),
+    _=Depends(require_admin),
 ):
     rc = db.get(models.RuntimeConfig, 1)
     if rc is None:
@@ -102,9 +107,9 @@ def atualizar_full_runtime(
 
     db.commit()
     db.refresh(rc)
-    return _montar_status(db)
+    return _montar_status(db, expose_paths=True)
 
 
 @router.get("/health")
 def health():
-    return {"ok": True}
+    return {"status": "ok"}

@@ -7,7 +7,7 @@ import BackupAcessoNegado from './BackupAcessoNegado.vue'
 const auth = useAuthStore()
 const pronto = ref(false)
 const bloqueado = computed(
-  () => pronto.value && auth.authEnabled && auth.token && !auth.podeAcessarBackup
+  () => pronto.value && auth.authEnabled && auth.user && !auth.podeAcessarBackup
 )
 
 const caminhoAtual = ref('')
@@ -28,7 +28,7 @@ async function listar(relPath = '') {
     parentRel.value = data.parent_relativo ?? null
     itens.value = data.itens || []
     selecionados.value = new Set()
-  } catch (e) {
+  } catch {
     erro.value = e.response?.data?.detail || 'Erro ao listar pasta'
   } finally {
     carregando.value = false
@@ -105,13 +105,13 @@ async function baixarSelecionados() {
     a.click()
     URL.revokeObjectURL(url)
     selecionados.value = new Set()
-  } catch (e) {
+  } catch {
     erro.value = 'Falha ao gerar ZIP'
   }
 }
 
 onMounted(async () => {
-  if (auth.authEnabled && auth.token) {
+  if (auth.authEnabled && auth.user) {
     await auth.carregarUsuario()
   }
   pronto.value = true

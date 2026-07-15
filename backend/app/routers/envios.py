@@ -5,12 +5,14 @@ import csv
 import io
 import json
 import uuid
+from functools import partial
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, joinedload
+from starlette.concurrency import run_in_threadpool
 
 from ..config import settings
 from ..database import get_db
@@ -18,6 +20,7 @@ from .. import models, schemas
 from ..auth import require_user
 from ..services import envio_service, ocr_service, pdf_service, cliente_crypto, file_provenance
 from ..services.pdf_service import PdfRequerSenhaError, PdfSenhaInvalidaError
+from ..services.upload_service import save_upload
 
 
 router = APIRouter(prefix="/api/envios", tags=["envios"])
@@ -25,6 +28,7 @@ router = APIRouter(prefix="/api/envios", tags=["envios"])
 
 def _envio_out(envio: models.Envio) -> schemas.EnvioOut:
     out = schemas.EnvioOut.model_validate(envio)
+    out.pode_reenviar = bool(envio.caminho_backup)
     if envio.cliente:
         out.cliente_nome = envio.cliente.nome
         out.cliente_email = envio.cliente.email
@@ -181,18 +185,18 @@ async def analisar_pdf(
     _=Depends(require_user),
 ):
     """Pré-visualização: layout, CPF, apólice e cliente sugerido (sem enviar)."""
-    if not arquivo.filename or not arquivo.filename.lower().endswith(".pdf"):
-        raise HTTPException(400, "Envie um ficheiro PDF")
-
     up = settings.data_path(settings.upload_folder)
     up.mkdir(parents=True, exist_ok=True)
-    tmp = up / f"analise_{uuid.uuid4().hex}_{arquivo.filename}"
+    tmp = up / f"analise_{uuid.uuid4().hex}.pdf"
     try:
-        tmp.write_bytes(await arquivo.read())
-        dados = pdf_service.extrair_dados(
-            tmp,
-            usar_ocr=usar_ocr and settings.ocr_enabled,
-            senha=pdf_senha,
+        await save_upload(arquivo, tmp, kind="pdf", allowed_suffixes={".pdf"})
+        dados = await run_in_threadpool(
+            partial(
+                pdf_service.extrair_dados,
+                tmp,
+                usar_ocr=usar_ocr and settings.ocr_enabled,
+                senha=pdf_senha,
+            )
         )
     finally:
         try:
@@ -274,6 +278,7 @@ async def _processar_request_manual(
     cliente_novo: str | None,
     numero_apolice: str | None,
     assunto: str | None,
+    mensagem: str | None,
     extrair_dados: bool,
     tipo_codigo: str | None,
     auto_id: int | None,
@@ -285,14 +290,37 @@ async def _processar_request_manual(
 
     up = settings.data_path(settings.upload_folder)
     up.mkdir(parents=True, exist_ok=True)
-    nome_seguro = f"{uuid.uuid4().hex}_{arquivo.filename or 'anexo.pdf'}"
+    nome_original = Path(arquivo.filename or "apolice.pdf").name
+    nome_seguro = f"{uuid.uuid4().hex}_apolice.pdf"
     destino_up = up / nome_seguro
-    with destino_up.open("wb") as fh:
-        fh.write(await arquivo.read())
+    await save_upload(
+        arquivo,
+        destino_up,
+        kind="pdf",
+        allowed_suffixes={".pdf"},
+    )
+
+    destino_boleto: Path | None = None
+    boleto_nome_original: str | None = None
+    if boleto and boleto.filename:
+        boleto_nome_original = Path(boleto.filename).name
+        destino_boleto = up / f"{uuid.uuid4().hex}_boleto.pdf"
+        try:
+            await save_upload(
+                boleto,
+                destino_boleto,
+                kind="pdf",
+                allowed_suffixes={".pdf"},
+            )
+        except Exception:
+            destino_up.unlink(missing_ok=True)
+            raise
 
     if extrair_dados:
         try:
-            dados_pdf = pdf_service.extrair_dados(destino_up, senha=pdf_senha)
+            dados_pdf = await run_in_threadpool(
+                partial(pdf_service.extrair_dados, destino_up, senha=pdf_senha)
+            )
             if not numero_apolice and dados_pdf.numero_apolice:
                 numero_apolice = dados_pdf.numero_apolice
         except Exception:
@@ -306,35 +334,57 @@ async def _processar_request_manual(
 
     try:
         rotulo = file_provenance.rotulo_usuario(usuario.nome, usuario.username)
-        envio = envio_service.processar_envio(
-            db,
-            cliente=cliente,
-            caminho_pdf=destino_up,
-            tipo_envio="MANUAL",
-            tipo_codigo=tipo_codigo,
-            auto=auto,
-            numero_apolice=numero_apolice,
-            assunto_customizado=assunto,
-            corpo_email_id=corpo_email_id,
-            assinatura_id=assinatura_id,
-            nome_arquivo_original=arquivo.filename,
-            pdf_senha=pdf_senha,
-            usuario_envio=usuario if usuario.id else None,
-            arquivo_colocado_por=rotulo,
+        envio = await run_in_threadpool(
+            partial(
+                envio_service.processar_envio,
+                db,
+                cliente=cliente,
+                caminho_pdf=destino_up,
+                tipo_envio="MANUAL",
+                tipo_codigo=tipo_codigo,
+                auto=auto,
+                numero_apolice=numero_apolice,
+                assunto_customizado=assunto,
+                corpo_html_customizado=mensagem,
+                corpo_email_id=corpo_email_id,
+                assinatura_id=assinatura_id,
+                nome_arquivo_original=nome_original,
+                pdf_senha=pdf_senha,
+                usuario_envio=usuario if usuario.id else None,
+                arquivo_colocado_por=rotulo,
+                boleto_path=destino_boleto,
+                boleto_nome_original=boleto_nome_original,
+            )
         )
     except PdfRequerSenhaError as e:
+        destino_up.unlink(missing_ok=True)
+        if destino_boleto:
+            destino_boleto.unlink(missing_ok=True)
         raise HTTPException(400, str(e))
     except PdfSenhaInvalidaError as e:
+        destino_up.unlink(missing_ok=True)
+        if destino_boleto:
+            destino_boleto.unlink(missing_ok=True)
         raise HTTPException(400, str(e))
     except ValueError as e:
+        destino_up.unlink(missing_ok=True)
+        if destino_boleto:
+            destino_boleto.unlink(missing_ok=True)
         raise HTTPException(400, str(e))
-
-    try:
-        proc = settings.data_path(settings.processed_folder)
-        proc.mkdir(parents=True, exist_ok=True)
-        destino_up.rename(proc / nome_seguro)
     except Exception:
-        pass
+        destino_up.unlink(missing_ok=True)
+        if destino_boleto:
+            destino_boleto.unlink(missing_ok=True)
+        raise
+
+    proc = settings.data_path(settings.processed_folder)
+    proc.mkdir(parents=True, exist_ok=True)
+    for origem in (destino_up, destino_boleto):
+        if origem and origem.exists():
+            try:
+                origem.replace(proc / origem.name)
+            except Exception:
+                origem.unlink(missing_ok=True)
 
     return envio
 
@@ -365,6 +415,7 @@ async def envio_manual(
         cliente_novo=cliente_novo,
         numero_apolice=numero_apolice,
         assunto=assunto,
+        mensagem=None,
         extrair_dados=extrair_dados,
         tipo_codigo=tipo_codigo,
         auto_id=auto_id,
@@ -400,6 +451,7 @@ async def envio_avulso_legado(
         cliente_novo=cliente_novo,
         numero_apolice=numero_apolice,
         assunto=assunto,
+        mensagem=mensagem,
         extrair_dados=extrair_dados,
         tipo_codigo=tipo_codigo,
         auto_id=auto_id,
@@ -429,11 +481,13 @@ async def demonstrar_email(
     if arquivo and arquivo.filename and extrair_dados:
         up = settings.data_path(settings.upload_folder)
         up.mkdir(parents=True, exist_ok=True)
-        tmp = up / f"demo_{uuid.uuid4().hex}_{arquivo.filename}"
+        tmp = up / f"demo_{uuid.uuid4().hex}.pdf"
         try:
-            tmp.write_bytes(await arquivo.read())
+            await save_upload(arquivo, tmp, kind="pdf", allowed_suffixes={".pdf"})
             try:
-                d = pdf_service.extrair_dados(tmp, senha=pdf_senha)
+                d = await run_in_threadpool(
+                    partial(pdf_service.extrair_dados, tmp, senha=pdf_senha)
+                )
                 if not numero_apolice and d.numero_apolice:
                     numero_apolice = d.numero_apolice
             except Exception:

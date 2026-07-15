@@ -194,10 +194,15 @@ class EnvioOut(BaseModel):
     tipo_codigo: str | None = None
     nome_arquivo_original: str | None = None
     nome_arquivo_final: str | None = None
+    nome_boleto: str | None = None
     numero_apolice: str | None = None
     status: str
     erro_msg: str | None = None
-    caminho_backup: str | None = None
+    pode_reenviar: bool = False
+    arquivo_sha256: str | None = None
+    provider_message_id: str | None = None
+    delivery_status: str | None = None
+    delivery_updated_at: datetime | None = None
     assunto_email: str | None = None
     assinatura_id: int | None = None
     usuario_envio_id: int | None = None
@@ -309,14 +314,10 @@ class TrocaSenhaIn(BaseModel):
 
 class TrocaSenhaOut(BaseModel):
     mensagem: str
-    access_token: str
-    token_type: str = "bearer"
     user: UsuarioOut
 
 
 class TokenOut(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
     user: UsuarioOut
 
 
@@ -325,6 +326,8 @@ class StatusOut(BaseModel):
     status: str
     versao: str
     auth_enabled: bool
+    email_provider: str = "brevo"
+    email_configured: bool = False
     full_enabled: bool
     full_env_enabled: bool
     full_scan_active: bool

@@ -86,11 +86,14 @@ def atualizar(
         except ValueError as e:
             raise HTTPException(400, str(e))
         u.senha_hash = hash_senha(data.pop("senha"))
+        u.session_version = int(u.session_version or 1) + 1
     else:
         data.pop("senha", None)
 
     for k, v in data.items():
         setattr(u, k, v)
+    if data.get("ativo") is False:
+        u.session_version = int(u.session_version or 1) + 1
     if u.is_admin:
         u.acesso_backup = True
 

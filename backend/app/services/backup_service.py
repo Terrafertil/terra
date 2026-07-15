@@ -6,10 +6,14 @@ from __future__ import annotations
 
 import re
 import shutil
+import logging
 from datetime import datetime
 from pathlib import Path
 
 from ..config import settings
+
+
+log = logging.getLogger(__name__)
 
 
 def _slug(texto: str) -> str:
@@ -40,3 +44,29 @@ def copiar_para_backup(
         destino = destino.with_stem(f"{destino.stem}_{ts}")
     shutil.copy2(origem, destino)
     return destino
+
+
+def aplicar_retencao_automatica() -> list[Path]:
+    """Remove somente pastas mensais YYYY-MM anteriores Ã  retenÃ§Ã£o configurada."""
+    if not settings.backup_retention_auto:
+        return []
+    meses = max(1, int(settings.backup_retention_months))
+    agora = datetime.now()
+    indice_atual = agora.year * 12 + (agora.month - 1)
+    limite = indice_atual - meses
+    root = settings.data_path(settings.backup_folder).resolve()
+    removidas: list[Path] = []
+    for pasta in root.iterdir() if root.is_dir() else []:
+        if not pasta.is_dir() or not re.fullmatch(r"\d{4}-\d{2}", pasta.name):
+            continue
+        ano, mes = map(int, pasta.name.split("-"))
+        if not 1 <= mes <= 12:
+            continue
+        if ano * 12 + (mes - 1) >= limite:
+            continue
+        resolved = pasta.resolve()
+        resolved.relative_to(root)
+        shutil.rmtree(resolved)
+        removidas.append(resolved)
+        log.info("Backup removido pela retenÃ§Ã£o automÃ¡tica: %s", resolved)
+    return removidas

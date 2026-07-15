@@ -10,6 +10,7 @@ Passos:
 from __future__ import annotations
 
 import logging
+import hashlib
 import tempfile
 import uuid
 from datetime import datetime
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from .. import models
 from ..config import settings
@@ -24,6 +26,53 @@ from . import email_service, backup_service, pdf_service, soc_service, file_prov
 
 
 log = logging.getLogger(__name__)
+
+
+def _arquivo_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _chave_idempotencia(
+    *,
+    arquivo_sha256: str,
+    boleto_sha256: str,
+    cliente_id: int,
+    tipo_envio: str,
+    tipo_codigo: str | None,
+) -> str:
+    raw = ":".join(
+        [
+            arquivo_sha256,
+            boleto_sha256,
+            str(cliente_id),
+            (tipo_envio or "").upper(),
+            tipo_codigo or "",
+        ]
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _envio_existente_idempotente(db: Session, key: str) -> models.Envio | None:
+    envio = (
+        db.query(models.Envio)
+        .filter(models.Envio.idempotency_key == key)
+        .first()
+    )
+    if envio and envio.status == "pendente":
+        idade = datetime.utcnow() - envio.criado_em
+        if idade.total_seconds() >= 120:
+            envio.status = "erro"
+            envio.erro_msg = (
+                "Envio anterior ficou em estado incerto. A reexecuÃ§Ã£o automÃ¡tica foi "
+                "bloqueada para evitar duplicidade; revise e use Reenviar se necessÃ¡rio."
+            )
+            db.commit()
+            db.refresh(envio)
+    return envio
 
 
 def _resolver_caminho_capa() -> Path | None:
@@ -173,17 +222,34 @@ def processar_envio(
     auto: models.Auto | None = None,
     numero_apolice: str | None = None,
     assunto_customizado: str | None = None,
+    corpo_html_customizado: str | None = None,
     corpo_email_id: int | None = None,
     assinatura_id: int | None = None,
     nome_arquivo_original: str | None = None,
     pdf_senha: str | None = None,
     usuario_envio: models.Usuario | None = None,
     arquivo_colocado_por: str | None = None,
+    boleto_path: str | Path | None = None,
+    boleto_nome_original: str | None = None,
 ) -> models.Envio:
     if soc_service.is_soc_locked(db):
         raise ValueError(soc_service.SOC_BLOCK_MSG)
 
     caminho_pdf = Path(caminho_pdf)
+    boleto = Path(boleto_path) if boleto_path else None
+    arquivo_hash = _arquivo_sha256(caminho_pdf)
+    boleto_hash = _arquivo_sha256(boleto) if boleto and boleto.is_file() else ""
+    idempotency_key = _chave_idempotencia(
+        arquivo_sha256=arquivo_hash,
+        boleto_sha256=boleto_hash,
+        cliente_id=cliente.id,
+        tipo_envio=tipo_envio,
+        tipo_codigo=tipo_codigo,
+    )
+    existente = _envio_existente_idempotente(db, idempotency_key)
+    if existente:
+        return existente
+
     temp_desbloqueio: Path | None = None
     temp_mesclado: Path | None = None
     pdf_uso, temp_desbloqueio = pdf_service.garantir_pdf_desbloqueado(
@@ -224,15 +290,29 @@ def processar_envio(
         tipo_codigo=tipo_codigo,
         nome_arquivo_original=nome_arquivo_original or caminho_pdf.name,
         nome_arquivo_final=nome_final,
+        nome_boleto=(Path(boleto_nome_original).name if boleto_nome_original else None),
         numero_apolice=numero_apolice,
         status="pendente",
+        arquivo_sha256=arquivo_hash,
+        idempotency_key=idempotency_key,
         assinatura_id=assin.id if assin else None,
         usuario_envio_id=uid if uid else None,
         enviado_por=enviado_por,
         arquivo_colocado_por=(arquivo_colocado_por or "").strip() or None,
     )
     db.add(envio)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existente = _envio_existente_idempotente(db, idempotency_key)
+        if existente:
+            if temp_mesclado is not None:
+                temp_mesclado.unlink(missing_ok=True)
+            if temp_desbloqueio is not None:
+                temp_desbloqueio.unlink(missing_ok=True)
+            return existente
+        raise
     db.refresh(envio)
 
     try:
@@ -241,6 +321,13 @@ def processar_envio(
             pdf_final, cliente.nome, nome_arquivo_destino=nome_final
         )
         envio.caminho_backup = str(destino)
+        if boleto and boleto.is_file():
+            destino_boleto = backup_service.copiar_para_backup(
+                boleto,
+                cliente.nome,
+                nome_arquivo_destino=envio.nome_boleto or boleto.name,
+            )
+            envio.caminho_backup_boleto = str(destino_boleto)
 
         # 2) e-mail
         ctx = _montar_contexto(
@@ -255,21 +342,36 @@ def processar_envio(
         )
         corpo_html = email_service.renderizar_template(
             contexto=ctx,
-            template_html=(corpo.html if corpo and corpo.html else None),
+            template_html=(
+                corpo_html_customizado
+                if corpo_html_customizado is not None
+                else corpo.html if corpo and corpo.html else None
+            ),
             assinatura_cid=cid,
         )
-        email_service.enviar_email(
+        anexos = [pdf_final]
+        nomes_anexos: list[str | None] = [
+            nome_final if temp_mesclado is not None else None
+        ]
+        if boleto and boleto.is_file():
+            anexos.append(boleto)
+            nomes_anexos.append(envio.nome_boleto or "boleto.pdf")
+        message_id = email_service.enviar_email(
             destinatario=cliente.email,
             assunto=assunto,
             corpo_html=corpo_html,
-            anexos=[pdf_final],
-            nome_anexo_pdf=nome_final if temp_mesclado is not None else None,
+            anexos=anexos,
+            nomes_anexos=nomes_anexos,
             assinatura_path=assin_path,
             assinatura_cid=cid,
+            tracking_id=f"envio_id:{envio.id}",
         )
 
         envio.assunto_email = assunto
         envio.status = "enviado"
+        envio.delivery_status = "accepted"
+        envio.delivery_updated_at = datetime.utcnow()
+        envio.provider_message_id = message_id
         envio.enviado_em = datetime.utcnow()
     except Exception as exc:
         envio.status = "erro"
@@ -303,6 +405,10 @@ def reenviar_envio(db: Session, envio_id: int) -> models.Envio:
     pdf = Path(envio.caminho_backup)
     if not pdf.is_file():
         raise ValueError(f"Backup não encontrado: {envio.caminho_backup}")
+
+    boleto = Path(envio.caminho_backup_boleto) if envio.caminho_backup_boleto else None
+    if boleto is not None and not boleto.is_file():
+        raise ValueError(f"Backup do boleto não encontrado: {envio.caminho_backup_boleto}")
 
     corpo = _resolver_corpo_email(db, envio.tipo_codigo)
     assin = None
@@ -339,17 +445,26 @@ def reenviar_envio(db: Session, envio_id: int) -> models.Envio:
             template_html=(corpo.html if corpo and corpo.html else None),
             assinatura_cid=cid,
         )
-        email_service.enviar_email(
+        anexos = [pdf]
+        nomes_anexos: list[str | None] = [envio.nome_arquivo_final or pdf.name]
+        if boleto:
+            anexos.append(boleto)
+            nomes_anexos.append(envio.nome_boleto or boleto.name)
+        message_id = email_service.enviar_email(
             destinatario=cliente.email,
             assunto=assunto,
             corpo_html=corpo_html,
-            anexos=[pdf],
-            nome_anexo_pdf=envio.nome_arquivo_final or pdf.name,
+            anexos=anexos,
+            nomes_anexos=nomes_anexos,
             assinatura_path=assin_path,
             assinatura_cid=cid,
+            tracking_id=f"envio_id:{envio.id}",
         )
         envio.assunto_email = assunto
         envio.status = "enviado"
+        envio.delivery_status = "accepted"
+        envio.delivery_updated_at = datetime.utcnow()
+        envio.provider_message_id = message_id
         envio.enviado_em = datetime.utcnow()
     except Exception as exc:
         envio.status = "erro"

@@ -8,7 +8,8 @@ from pypdf import PdfReader
 
 from ..config import settings
 from .. import schemas
-from ..auth import require_user
+from ..auth import require_user, require_admin
+from ..services.upload_service import save_upload
 
 
 router = APIRouter(prefix="/api/capa", tags=["capa"])
@@ -48,7 +49,7 @@ def info(_=Depends(require_user)):
 
 
 @router.get("/visualizar")
-def visualizar():
+def visualizar(_=Depends(require_user)):
     p = _caminho_capa()
     if not p.is_file():
         raise HTTPException(404, "Capa não configurada")
@@ -58,27 +59,24 @@ def visualizar():
 @router.post("", response_model=schemas.CapaInfoOut)
 async def upload(
     arquivo: UploadFile = File(...),
-    _=Depends(require_user),
+    _=Depends(require_admin),
 ):
     """Upload de qualquer PDF; é renomeado automaticamente para `capa.pdf`
     (ou o que estiver em CAPA_ARQUIVO_PADRAO) para bater com o .env."""
-    if not arquivo.filename:
-        raise HTTPException(400, "Arquivo sem nome")
-    if Path(arquivo.filename).suffix.lower() != ".pdf":
-        raise HTTPException(400, "Envie um PDF (.pdf)")
-    conteudo = await arquivo.read()
-    if not conteudo:
-        raise HTTPException(400, "Arquivo vazio")
-
     pasta = settings.data_path(settings.capa_folder)
     pasta.mkdir(parents=True, exist_ok=True)
     destino = _caminho_capa()
-    destino.write_bytes(conteudo)
+    await save_upload(
+        arquivo,
+        destino,
+        kind="pdf",
+        allowed_suffixes={".pdf"},
+    )
     return _info_atual()
 
 
 @router.delete("", status_code=204)
-def remover(_=Depends(require_user)):
+def remover(_=Depends(require_admin)):
     p = _caminho_capa()
     if p.is_file():
         try:

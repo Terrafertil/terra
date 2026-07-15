@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from .. import models, schemas
-from ..auth import require_user
+from ..auth import require_user, require_admin
 from ..services import email_service, atalhos_service
 
 
@@ -43,7 +43,7 @@ def listar_atalhos(db: Session = Depends(get_db), _=Depends(require_user)):
 def salvar_atalhos_personalizados(
     payload: schemas.AtalhosPersonalizadosPatch,
     db: Session = Depends(get_db),
-    _=Depends(require_user),
+    _=Depends(require_admin),
 ):
     """Substitui a lista de atalhos HTML criados pela equipe."""
     itens = [a.model_dump() for a in payload.atalhos]
@@ -63,7 +63,7 @@ def obter(cid: int, db: Session = Depends(get_db), _=Depends(require_user)):
 def criar(
     payload: schemas.CorpoEmailCreate,
     db: Session = Depends(get_db),
-    _=Depends(require_user),
+    _=Depends(require_admin),
 ):
     if db.query(models.CorpoEmail).filter(models.CorpoEmail.nome == payload.nome).first():
         raise HTTPException(400, "Nome já existe")
@@ -79,7 +79,7 @@ def atualizar(
     cid: int,
     payload: schemas.CorpoEmailUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_user),
+    _=Depends(require_admin),
 ):
     c = db.get(models.CorpoEmail, cid)
     if not c:
@@ -100,7 +100,7 @@ def atualizar(
 
 
 @router.delete("/{cid}", status_code=204)
-def remover(cid: int, db: Session = Depends(get_db), _=Depends(require_user)):
+def remover(cid: int, db: Session = Depends(get_db), _=Depends(require_admin)):
     c = db.get(models.CorpoEmail, cid)
     if not c:
         raise HTTPException(404, "Corpo de e-mail não encontrado")

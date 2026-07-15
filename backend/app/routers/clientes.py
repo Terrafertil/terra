@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from .. import models, schemas
-from ..auth import require_user
+from ..auth import require_user, require_admin
 from ..services import lgpd_service
 from ..services import cliente_crypto
 
@@ -70,7 +70,7 @@ def atualizar(
 
 
 @router.delete("/{cid}", status_code=204)
-def remover(cid: int, db: Session = Depends(get_db), _=Depends(require_user)):
+def remover(cid: int, db: Session = Depends(get_db), _=Depends(require_admin)):
     c = db.get(models.Cliente, cid)
     if not c:
         raise HTTPException(404, "Cliente não encontrado")
@@ -83,7 +83,7 @@ def exclusao_lgpd(
     cid: int,
     payload: schemas.ClienteLgpdExclusaoIn,
     db: Session = Depends(get_db),
-    _=Depends(require_user),
+    _=Depends(require_admin),
 ):
     """Exclusão do titular (LGPD): remove cadastro, histórico e PDFs de backup."""
     try:

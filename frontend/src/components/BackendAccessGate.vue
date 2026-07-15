@@ -1,7 +1,6 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import axios from 'axios'
-import { API_BASE_URL, setBackendAccessKey, getBackendAccessKey } from '../api'
+import { api } from '../api'
 
 const visivel = ref(false)
 const chave = ref('')
@@ -11,9 +10,9 @@ const precisaChave = ref(false)
 
 async function verificarNecessidade() {
   try {
-    const { data } = await axios.get(`${API_BASE_URL}/api/status`)
+    const { data } = await api.get('/api/auth/status')
     precisaChave.value = Boolean(data.backend_access_enabled)
-    if (precisaChave.value && !getBackendAccessKey()) {
+    if (precisaChave.value && !data.backend_access_authorized) {
       visivel.value = true
     }
   } catch {
@@ -25,11 +24,11 @@ async function confirmar() {
   erro.value = ''
   carregando.value = true
   try {
-    const { data } = await axios.post(`${API_BASE_URL}/api/auth/verificar-acesso-backend`, {
+    const { data } = await api.post('/api/auth/verificar-acesso-backend', {
       chave: chave.value,
     })
     if (data?.ok) {
-      setBackendAccessKey(chave.value.trim())
+      chave.value = ''
       visivel.value = false
       window.location.reload()
     } else {

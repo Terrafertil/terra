@@ -293,7 +293,10 @@ const passos = [
       <ul class="tutorial-lista mt-2">
         <li>PDF com senha no FULL — use ficheiro <code>.senha</code> ou envio manual.</li>
         <li>Cliente não encontrado no FULL — confira se o CPF no cadastro é igual ao do PDF.</li>
-        <li>E-mail não sai — verifique corpo de e-mail no tipo de envio e AWS SES (SMTP) no servidor.</li>
+        <li>
+          E-mail não sai — confirme a configuração SMTP da Brevo no servidor, se foi usada uma
+          <strong>chave SMTP</strong> (não a API key) e se o domínio remetente está autenticado.
+        </li>
       </ul>
     </section>
   </div>

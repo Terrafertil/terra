@@ -1,83 +1,67 @@
 import { defineStore } from 'pinia'
 import { api } from '../api'
 
-function claimsFromToken(token) {
-  if (!token) return {}
-  try {
-    const b = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')
-    return JSON.parse(atob(b))
-  } catch {
-    return {}
-  }
-}
-
 export const useAuthStore = defineStore('auth', {
   state: () => ({
     user: null,
-    token: localStorage.getItem('access_token') || null,
     authEnabled: false,
     mustChangePassword: false,
     _loaded: false,
   }),
   getters: {
-    isLogged: (s) => !!s.token || !s.authEnabled,
-    needsPasswordChange: (s) => s.authEnabled && !!s.token && s.mustChangePassword,
+    isLogged: (s) => Boolean(s.user) || !s.authEnabled,
+    needsPasswordChange: (s) =>
+      s.authEnabled && Boolean(s.user) && s.mustChangePassword,
     podeAcessarBackup: (s) => {
       if (!s.authEnabled) return true
-      const u = s.user
-      if (!u) return false
-      return Boolean(u.is_admin || u.acesso_backup)
+      if (!s.user) return false
+      return Boolean(s.user.is_admin || s.user.acesso_backup)
     },
     isDiretor: (s) => Boolean(s.user?.is_diretor),
   },
   actions: {
+    aplicarUsuario(user) {
+      this.user = user || null
+      this.mustChangePassword = Boolean(user?.must_change_password)
+    },
+    limparSessao() {
+      this.user = null
+      this.mustChangePassword = false
+      // Remove sessÃµes antigas, usadas antes da migraÃ§Ã£o para cookie HttpOnly.
+      localStorage.removeItem('access_token')
+      localStorage.removeItem('tf_backend_access_key')
+    },
     async carregarStatus() {
       const { data } = await api.get('/api/auth/status')
-      this.authEnabled = !!data.auth_enabled
+      this.authEnabled = Boolean(data.auth_enabled)
       return data
     },
     async carregarUsuario() {
-      if (!this.token || !this.authEnabled) return null
+      if (!this.authEnabled) return null
       try {
         const { data } = await api.get('/api/auth/me')
-        this.user = data
+        this.aplicarUsuario(data)
         return data
       } catch {
+        this.limparSessao()
         return null
       }
     },
     async login(username, senha) {
       const { data } = await api.post('/api/auth/login', { username, senha })
-      this.aplicarToken(data.access_token)
-      this.user = data.user
-      this.mustChangePassword = !!data.user?.must_change_password
+      this.aplicarUsuario(data.user)
       return data
     },
-    logout() {
-      this.token = null
-      this.user = null
-      this.mustChangePassword = false
-      localStorage.removeItem('access_token')
-    },
-    aplicarToken(token) {
-      this.token = token
-      if (token) {
-        localStorage.setItem('access_token', token)
-        const c = claimsFromToken(token)
-        this.mustChangePassword = !!c.must_change_password
-      } else {
-        localStorage.removeItem('access_token')
-        this.mustChangePassword = false
+    async logout() {
+      try {
+        await api.post('/api/auth/logout')
+      } finally {
+        this.limparSessao()
       }
     },
     async restaurarSessao() {
-      if (this.token) {
-        const c = claimsFromToken(this.token)
-        this.mustChangePassword = !!c.must_change_password
-        if (this.authEnabled) {
-          await this.carregarUsuario()
-        }
-      }
+      this.limparSessao()
+      if (this.authEnabled) await this.carregarUsuario()
     },
   },
 })

@@ -1,8 +1,7 @@
-"""Envio de e-mail via SMTP (síncrono).
+"""Envio de e-mail transacional via SMTP (síncrono).
 
-Produção com AWS SES: configure USE_AWS_SES=true, AWS_SES_REGION e credenciais SMTP
-geradas no console SES (SMTP settings). O sistema envia apólice em anexo por SMTP —
-não usa API de campanhas nem SDK boto3 neste fluxo.
+Produção com Brevo: configure USE_BREVO=true, o login SMTP e uma chave SMTP.
+O sistema envia cada apólice pelo relay transacional da Brevo, com PDF em anexo.
 
 Suporta:
 - Corpo HTML customizado por TipoEnvio (com placeholders {{ var }})
@@ -16,6 +15,7 @@ import ssl
 import mimetypes
 import uuid
 from email.message import EmailMessage
+from email.utils import make_msgid
 from pathlib import Path
 from typing import Iterable, Mapping, Any
 
@@ -217,16 +217,33 @@ def enviar_email(
     corpo_html: str,
     anexos: Iterable[str | Path] = (),
     nome_anexo_pdf: str | None = None,
+    nomes_anexos: Iterable[str | None] = (),
     assinatura_path: str | Path | None = None,
     assinatura_cid: str | None = None,
-) -> None:
-    if not settings.smtp_host:
-        raise RuntimeError("SMTP não configurado (.env SMTP_HOST vazio)")
+    tracking_id: str | None = None,
+) -> str:
+    faltantes = []
+    if not (settings.smtp_host or "").strip():
+        faltantes.append("SMTP_HOST")
+    if not (settings.smtp_from_email or "").strip():
+        faltantes.append("BREVO_SENDER_EMAIL/SMTP_FROM_EMAIL")
+    if settings.use_brevo and not (settings.smtp_user or "").strip():
+        faltantes.append("BREVO_SMTP_LOGIN/SMTP_USER")
+    if settings.use_brevo and not (settings.smtp_password or "").strip():
+        faltantes.append("BREVO_SMTP_KEY/SMTP_PASSWORD")
+    if faltantes:
+        raise RuntimeError(
+            "Brevo SMTP não configurada; preencha no .env: " + ", ".join(faltantes)
+        )
 
     msg = EmailMessage()
     msg["From"] = f"{settings.smtp_from_name} <{settings.smtp_from_email}>"
     msg["To"] = destinatario
     msg["Subject"] = assunto
+    message_id = make_msgid(domain="terrafertil.local")
+    msg["Message-ID"] = message_id
+    if tracking_id:
+        msg["X-Mailin-custom"] = tracking_id
     msg.set_content("Sua apólice segue em anexo. (e-mail em HTML)")
     msg.add_alternative(corpo_html, subtype="html")
 
@@ -250,7 +267,8 @@ def enviar_email(
             )
 
     # PDFs / anexos
-    for caminho in anexos:
+    nomes = list(nomes_anexos)
+    for index, caminho in enumerate(anexos):
         p = Path(caminho)
         if not p.is_file():
             raise FileNotFoundError(f"Anexo PDF em falta ou inválido: {p}")
@@ -262,11 +280,34 @@ def enviar_email(
             dados,
             maintype="application",
             subtype="pdf",
-            filename=nome_anexo_pdf or p.name,
+            filename=(
+                nomes[index]
+                if index < len(nomes) and nomes[index]
+                else nome_anexo_pdf if index == 0 and nome_anexo_pdf else p.name
+            ),
         )
 
+    if settings.use_brevo:
+        tamanho = len(msg.as_bytes())
+        limite = max(1, settings.brevo_max_message_mb) * 1024 * 1024
+        if tamanho > limite:
+            raise ValueError(
+                "E-mail com anexos excede o limite transacional da Brevo: "
+                f"{tamanho / 1024 / 1024:.1f} MB (máximo {settings.brevo_max_message_mb} MB)."
+            )
+
     contexto = ssl.create_default_context()
-    if settings.smtp_use_tls:
+    if settings.smtp_use_ssl:
+        with smtplib.SMTP_SSL(
+            settings.smtp_host,
+            settings.smtp_port,
+            timeout=30,
+            context=contexto,
+        ) as smtp:
+            if settings.smtp_user:
+                smtp.login(settings.smtp_user, settings.smtp_password)
+            smtp.send_message(msg)
+    elif settings.smtp_use_tls:
         with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:
             smtp.ehlo()
             smtp.starttls(context=contexto)
@@ -279,6 +320,8 @@ def enviar_email(
             if settings.smtp_user:
                 smtp.login(settings.smtp_user, settings.smtp_password)
             smtp.send_message(msg)
+
+    return message_id
 
 
 def gerar_cid() -> str:

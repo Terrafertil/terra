@@ -13,15 +13,24 @@ _ALLOWED_PREFIXES = (
     "/api/status",
     "/api/auth",
     "/api/soc",
+    "/api/webhooks/brevo",
 )
 
-_PUBLIC_PREFIXES = ("/docs", "/redoc", "/openapi.json", "/")
+_PUBLIC_EXACT = {"/", "/openapi.json"}
+_PUBLIC_PREFIXES = ("/docs", "/redoc")
+
+
+def _is_public_path(path: str) -> bool:
+    return path in _PUBLIC_EXACT or any(
+        path == prefix or path.startswith(prefix + "/")
+        for prefix in _PUBLIC_PREFIXES
+    )
 
 
 class SocLockdownMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path.rstrip("/") or "/"
-        if any(path.startswith(p) for p in _PUBLIC_PREFIXES):
+        if _is_public_path(path):
             return await call_next(request)
 
         db = SessionLocal()

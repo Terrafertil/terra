@@ -27,9 +27,7 @@ async function enviar() {
       senha_nova: senhaNova.value,
       senha_nova_confirmacao: senhaNova2.value,
     })
-    auth.aplicarToken(data.access_token)
-    auth.user = data.user
-    auth.mustChangePassword = false
+    auth.aplicarUsuario(data.user)
     router.replace('/dashboard')
   } catch (e) {
     erro.value = e.response?.data?.detail || 'Recuperacao falhou'

@@ -5,20 +5,30 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from ..config import settings
 from ..services.data_crypto_service import backend_access_enabled, verify_backend_access
 
 
 _PUBLIC_PREFIXES = (
     "/docs",
     "/redoc",
-    "/openapi.json",
+    "/api/auth",
 )
 
 _PUBLIC_EXACT = {
     "/",
-    "/api/status",
+    "/api/health",
+    "/api/webhooks/brevo",
     "/api/auth/status",
+    "/openapi.json",
 }
+
+
+def _is_public_path(path: str) -> bool:
+    return path in _PUBLIC_EXACT or any(
+        path == prefix or path.startswith(prefix + "/")
+        for prefix in _PUBLIC_PREFIXES
+    )
 
 
 class BackendAccessMiddleware(BaseHTTPMiddleware):
@@ -27,9 +37,7 @@ class BackendAccessMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         path = request.url.path.rstrip("/") or "/"
-        if path in _PUBLIC_EXACT:
-            return await call_next(request)
-        if any(path.startswith(p) for p in _PUBLIC_PREFIXES):
+        if _is_public_path(path):
             return await call_next(request)
         if path == "/api/auth/verificar-acesso-backend" and request.method == "POST":
             return await call_next(request)
@@ -37,7 +45,9 @@ class BackendAccessMiddleware(BaseHTTPMiddleware):
         if not path.startswith("/api"):
             return await call_next(request)
 
-        key = request.headers.get("X-Backend-Access-Key")
+        key = request.headers.get("X-Backend-Access-Key") or request.cookies.get(
+            settings.backend_access_cookie_name
+        )
         if not verify_backend_access(key):
             return JSONResponse(
                 status_code=403,

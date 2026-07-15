@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..database import get_db
 from .. import models, schemas
-from ..auth import require_user
+from ..auth import require_user, require_admin
+from ..services.upload_service import save_upload
 
 
 router = APIRouter(prefix="/api/assinaturas", tags=["assinaturas"])
@@ -24,12 +25,11 @@ def _slug(texto: str) -> str:
     return (s or "assinatura")[:60]
 
 
-def _salvar_arquivo(nome: str, conteudo: bytes, ext: str) -> str:
+def _novo_caminho(nome: str, ext: str) -> Path:
     pasta = settings.data_path(settings.assinaturas_folder)
     pasta.mkdir(parents=True, exist_ok=True)
     nome_final = f"{_slug(nome)}_{uuid.uuid4().hex[:8]}{ext.lower()}"
-    (pasta / nome_final).write_bytes(conteudo)
-    return nome_final
+    return pasta / nome_final
 
 
 @router.get("", response_model=list[schemas.AssinaturaOut])
@@ -53,7 +53,7 @@ def obter(aid: int, db: Session = Depends(get_db), _=Depends(require_user)):
 
 
 @router.get("/{aid}/imagem")
-def imagem(aid: int, db: Session = Depends(get_db)):
+def imagem(aid: int, db: Session = Depends(get_db), _=Depends(require_user)):
     a = db.get(models.Assinatura, aid)
     if not a or not a.arquivo:
         raise HTTPException(404, "Imagem não encontrada")
@@ -72,7 +72,7 @@ async def criar(
     telefone: str | None = Form(None),
     arquivo: UploadFile | None = File(None),
     db: Session = Depends(get_db),
-    _=Depends(require_user),
+    _=Depends(require_admin),
 ):
     if db.query(models.Assinatura).filter(models.Assinatura.nome == nome).first():
         raise HTTPException(400, "Já existe assinatura com esse nome")
@@ -80,12 +80,14 @@ async def criar(
     arquivo_nome: str | None = None
     if arquivo and arquivo.filename:
         ext = Path(arquivo.filename).suffix.lower()
-        if ext not in EXTS_OK:
-            raise HTTPException(400, f"Extensão não suportada: {ext}")
-        conteudo = await arquivo.read()
-        if not conteudo:
-            raise HTTPException(400, "Arquivo vazio")
-        arquivo_nome = _salvar_arquivo(nome, conteudo, ext)
+        destino = _novo_caminho(nome, ext)
+        await save_upload(
+            arquivo,
+            destino,
+            kind="image",
+            allowed_suffixes=EXTS_OK,
+        )
+        arquivo_nome = destino.name
 
     a = models.Assinatura(
         nome=nome,
@@ -112,7 +114,7 @@ async def atualizar(
     ativo: bool | None = Form(None),
     arquivo: UploadFile | None = File(None),
     db: Session = Depends(get_db),
-    _=Depends(require_user),
+    _=Depends(require_admin),
 ):
     a = db.get(models.Assinatura, aid)
     if not a:
@@ -139,11 +141,13 @@ async def atualizar(
 
     if arquivo and arquivo.filename:
         ext = Path(arquivo.filename).suffix.lower()
-        if ext not in EXTS_OK:
-            raise HTTPException(400, f"Extensão não suportada: {ext}")
-        conteudo = await arquivo.read()
-        if not conteudo:
-            raise HTTPException(400, "Arquivo vazio")
+        destino = _novo_caminho(a.nome, ext)
+        await save_upload(
+            arquivo,
+            destino,
+            kind="image",
+            allowed_suffixes=EXTS_OK,
+        )
         # apaga o antigo
         if a.arquivo:
             antigo = settings.data_path(settings.assinaturas_folder) / a.arquivo
@@ -152,7 +156,7 @@ async def atualizar(
                     antigo.unlink()
                 except Exception:
                     pass
-        a.arquivo = _salvar_arquivo(a.nome, conteudo, ext)
+        a.arquivo = destino.name
 
     db.commit()
     db.refresh(a)
@@ -160,7 +164,7 @@ async def atualizar(
 
 
 @router.delete("/{aid}", status_code=204)
-def remover(aid: int, db: Session = Depends(get_db), _=Depends(require_user)):
+def remover(aid: int, db: Session = Depends(get_db), _=Depends(require_admin)):
     a = db.get(models.Assinatura, aid)
     if not a:
         raise HTTPException(404, "Assinatura não encontrada")

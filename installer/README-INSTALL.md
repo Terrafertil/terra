@@ -1,162 +1,185 @@
-# Instalador — Windows Server
+# Instalação no Windows Server
 
 ## Pré-requisitos
-- Windows Server 2019 / 2022
-- Acesso como **Administrador**
-- Conexão com a internet (para baixar Python, Node e NSSM)
 
-## Instalação
+- Windows Server 2019/2022 ou Windows 10/11.
+- PowerShell aberto como administrador.
+- Internet para instalar Python, Node.js e NSSM.
+- IP fixo ou nome DNS reservado para o servidor.
 
-Abra o **PowerShell como Administrador** na pasta `installer/` e rode:
+## Instalar ou atualizar
+
+Na pasta `installer/`:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass -Force
-.\install.ps1
+.\install.ps1 -InstallDir "C:\envio-sistema" -ServicePort 8000 -ServerIp 192.168.1.50
 ```
 
-Opcionais:
+Opções úteis:
 
 ```powershell
-.\install.ps1 -InstallDir "D:\apps\envio" -ServicePort 8000 -FrontPort 5173
-.\install.ps1 -SkipFrontend        # só o backend
-.\install.ps1 -SkipServices        # não registra serviços, só prepara
+.\install.ps1 -SkipFrontend    # instala somente a API
+.\install.ps1 -SkipServices    # prepara arquivos sem registrar/iniciar serviço
 ```
 
-O script faz automaticamente:
-1. Instala Python 3.11+ (via winget ou download direto)
-2. Instala Node.js LTS
-3. Baixa e instala **NSSM** em `C:\tools\nssm\` e adiciona ao PATH
-4. Copia os fontes para `C:\envio-sistema\`
-5. Cria o venv Python, instala `requirements.txt`
-6. Faz `npm install` + `npm run build` no frontend
-7. Registra os serviços Windows `EnvioApolices-API` e `EnvioApolices-Front`
-8. Libera as portas no firewall
+O instalador:
 
-## Gerenciar serviços no servidor
+1. valida Python 3.11+ e Node.js 20+;
+2. valida assinatura digital dos instaladores baixados diretamente;
+3. baixa o NSSM e valida seu SHA-256 antes de extrair;
+4. copia apenas fontes e manifestos permitidos;
+5. preserva `.env`, banco, salt, PDFs, backups e logs existentes;
+6. gera segredos e senhas fortes somente em instalação nova;
+7. instala dependências Python pelo `requirements.lock` com hashes;
+8. executa `npm ci` e compila o frontend;
+9. registra somente `EnvioApolices-API`, que também serve o painel;
+10. abre somente a porta configurada, executa health check e restaura o código anterior
+    se o deploy falhar.
 
-Depois da instalação, use PowerShell como administrador:
+Não há serviço `EnvioApolices-Front` nem porta 5173 em produção. O parâmetro legado
+`-FrontPort` é aceito apenas para compatibilidade e não abre uma porta.
 
-```powershell
-Start-Service EnvioApolices-API
-Start-Service EnvioApolices-Front
-Get-Service EnvioApolices-*
-Stop-Service EnvioApolices-Front -ErrorAction SilentlyContinue
-Stop-Service EnvioApolices-API -ErrorAction SilentlyContinue
-```
+## Primeiro acesso
 
-## Após instalar
+O instalador mostra as senhas iniciais aleatórias de `admin` e `admindiretor` uma única
+vez. Guarde-as em um cofre e troque-as no primeiro login.
 
-Edite o arquivo de configuração do backend:
-```
+Edite:
+
+```text
 C:\envio-sistema\backend\.env
 ```
-Ajuste principalmente:
-- `SMTP_*` / `AWS_SES_*` (credenciais do Amazon SES)
-- `FULL_WATCH_FOLDER` (pasta que o watcher vai varrer)
-- `ADMIN_PASSWORD` (senha inicial do admin)
 
-Reinicie o serviço:
+Configure no mínimo:
+
+- `BREVO_SMTP_LOGIN`, `BREVO_SMTP_KEY` e `BREVO_SENDER_*`;
+- `BREVO_WEBHOOK_TOKEN` no sistema e na autenticação Bearer do webhook Brevo;
+- `FULL_WATCH_FOLDER`, de preferência em disco persistente;
+- `CORS_ORIGINS`, com a URL real do painel;
+- `AUTH_COOKIE_SECURE=true` assim que o endereço estiver sob HTTPS.
+
+Depois:
+
 ```powershell
 Restart-Service EnvioApolices-API
+Invoke-RestMethod http://127.0.0.1:8000/api/health
 ```
 
-Ver status:
+Nos outros computadores, abra `http://192.168.1.50:8000`. Nunca use `localhost` em
+uma máquina cliente.
+
+## Serviço e logs
+
 ```powershell
-Get-Service EnvioApolices-*
+Get-Service EnvioApolices-API
+Restart-Service EnvioApolices-API
+Stop-Service EnvioApolices-API
+Start-Service EnvioApolices-API
 ```
 
-## Operação recomendada no servidor
+Logs:
 
-### Pastas que devem ter backup externo
+```text
+C:\envio-sistema\backend\logs\api.out.log
+C:\envio-sistema\backend\logs\api.err.log
+```
 
-Tudo abaixo é relativo à pasta `backend/` da instalação:
+Swagger fica desativado por padrão. Para diagnóstico em ambiente restrito, defina
+`DOCS_ENABLED=true`, reinicie o serviço e use `/docs`; desative novamente depois.
 
-| Pasta / ficheiro | Função |
-|------------------|--------|
-| `data/envio.db` | Base de dados (clientes, envios) |
-| `backup/` | Cópia de cada apólice enviada |
-| `entrada/` | PDFs à espera do modo FULL |
-| `processados/` | PDFs já tratados pelo FULL |
-| `capas/capa.pdf` | Capa junta a cada envio |
+## HTTPS
 
-Configure caminhos absolutos no `.env` se preferir outro disco (ex.: `D:\envio\backup`).
+O instalador não pode emitir um certificado sem domínio e controle DNS. Em produção,
+publique o serviço atrás de IIS, Caddy, nginx ou outro proxy reverso com certificado
+válido. Encaminhe para `http://127.0.0.1:8000` e configure:
 
-### Tesseract OCR (PDFs só imagem)
+```dotenv
+AUTH_COOKIE_SECURE=true
+CORS_ORIGINS=https://painel.seu-dominio.com.br
+```
 
-1. Instale: [Tesseract para Windows](https://github.com/UB-Mannheim/tesseract/wiki)
-2. No `backend/.env`:
-   ```
-   OCR_ENABLED=true
-   TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
-   ```
-3. `Restart-Service EnvioApolices-API`
-4. No painel, o menu mostra **OCR ativo** quando o motor está disponível.
+Restrinja a regra de firewall da porta 8000 à rede/proxy quando o painel for exposto.
+HSTS é enviado automaticamente nas requisições HTTPS.
 
-### PDF protegido por senha (modo FULL)
+## Brevo e confirmação de entrega
 
-Na mesma pasta do PDF em `entrada/<tipo>/`, crie um ficheiro com a senha numa linha:
+Use uma chave SMTP, não a API key da conta. Cadastre o webhook transacional:
 
-- `documento.pdf.senha`, ou
-- `documento.senha.txt`
+```text
+https://painel.seu-dominio.com.br/api/webhooks/brevo
+Authorization: Bearer <BREVO_WEBHOOK_TOKEN>
+```
 
-Exemplo: `entrada/auto/55207_apolice.pdf` + `entrada/auto/55207_apolice.pdf.senha`
+Selecione os eventos de entrega, abertura, clique, soft/hard bounce, bloqueio e erro.
+O histórico correlaciona os eventos pelo identificador da mensagem e pelo campo de
+rastreamento enviado pelo sistema.
 
-A senha **não** é guardada na base de dados.
+## Dados persistentes e backup externo
 
-### Após alterar `.env` ou dependências Python
+Inclua em backup externo/imutável:
+
+| Caminho relativo a `backend/` | Conteúdo |
+|---|---|
+| `.env` | segredos e configurações |
+| `data/envio.db` | clientes, histórico e configurações |
+| `data/.crypto_salt` | salt necessário para decifrar dados |
+| `backup/` | apólices e boletos enviados |
+| `entrada/` | fila FULL |
+| `processados/` | arquivos tratados |
+| `capas/` e `assinaturas/` | conteúdo de e-mail |
+
+Não armazene a única cópia das chaves no mesmo servidor do banco. A retenção automática
+vem desativada; habilite apenas depois de definir a política legal e validar o backup.
+
+## Rotação da chave de dados
+
+Pare a API antes de executar:
 
 ```powershell
+Stop-Service EnvioApolices-API
 cd C:\envio-sistema\backend
-.\.venv\Scripts\pip install -r requirements.txt
-Restart-Service EnvioApolices-API
-Restart-Service EnvioApolices-Front
+.\.venv\Scripts\python scripts\rotate_encryption_key.py --confirm-api-offline
+Start-Service EnvioApolices-API
 ```
 
-## Usar o front em outra máquina da rede
+O script cria backup nativo do SQLite e cópias de `.env`/salt antes da recifragem. Não
+execute durante modo SOC.
 
-**Cenário recomendado:** backend e frontend no **mesmo servidor**; os outros PCs só abrem o browser.
+## OCR e PDF protegido
 
-| O quê | URL nos outros PCs |
-|-------|-------------------|
-| Interface (Vue) | `http://IP-DO-SERVIDOR:5173` |
-| API (teste) | `http://IP-DO-SERVIDOR:8000/docs` |
+Instale Tesseract e configure, se necessário:
 
-**Nunca** use `localhost` no browser de outro PC — `localhost` é sempre a máquina local.
+```dotenv
+OCR_ENABLED=true
+TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
+```
 
-### Erro comum: página abre mas não carrega / login falha
+Para PDF protegido no FULL, coloque ao lado dele `documento.pdf.senha` ou
+`documento.senha.txt`, com a senha em uma linha. Essa senha não é salva no banco.
 
-O Vite grava `VITE_API_URL` **no momento do build**. Se o build foi feito com
-`http://localhost:8000`, o browser de outro PC tenta falar com a API **dele**, não do servidor.
+## Atualizar dependências ou reconstruir o painel
 
-**Correção no servidor** (PowerShell como administrador):
+Preferencialmente rode novamente `install.ps1`; ele mantém dados e possui rollback.
+Para reconstruir somente o frontend:
 
 ```powershell
-cd C:\envio-sistema\installer   # ou a pasta installer do projeto
-.\rebuild-frontend.ps1 -ServerIp 192.168.1.50
+.\rebuild-frontend.ps1 -InstallDir "C:\envio-sistema" -ServerIp 192.168.1.50
 ```
 
-Substitua pelo IPv4 real (`ipconfig` no servidor). Depois, nos outros PCs: `http://192.168.1.50:5173`.
-
-Confirme também:
-
-1. Serviços a correr: `Get-Service EnvioApolices-*`
-2. Firewall: portas **8000** e **5173** liberadas (o `install.ps1` cria as regras)
-3. `frontend/.env`: `VITE_BACKEND_ACCESS_KEY` igual a `BACKEND_ACCESS_KEY` no `backend/.env`
-4. Teste a API primeiro: `http://IP:8000/docs` — se isto não abrir, o problema é rede/firewall/serviço API
-
-### Front instalado em cada PC cliente (opcional)
-
-1. Copie a pasta `frontend/` para a máquina cliente
-2. Edite `frontend/.env`:
-   ```
-   VITE_API_URL=http://IP-DO-SERVIDOR:8000
-   VITE_BACKEND_ACCESS_KEY=<mesma chave do backend>
-   ```
-3. `npm install && npm run build && npm run preview -- --host 0.0.0.0`
+O build usa mesma origem e não contém `BACKEND_ACCESS_KEY`.
 
 ## Desinstalação
 
+Por segurança, a desinstalação padrão remove serviço e firewall, mas preserva a pasta:
+
 ```powershell
-.\uninstall.ps1                 # remove tudo
-.\uninstall.ps1 -KeepData       # remove serviços, mantém arquivos/backup
+.\uninstall.ps1
+```
+
+Para apagar também banco, documentos, backups e segredos, confirme uma cópia externa e
+use explicitamente:
+
+```powershell
+.\uninstall.ps1 -RemoveData
 ```

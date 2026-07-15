@@ -1,7 +1,7 @@
 """Setup do SQLAlchemy + SQLite."""
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session
 from typing import Generator
 
@@ -29,9 +29,22 @@ def _database_url_resolvida() -> str:
 engine_kwargs = {"future": True}
 _db_url = _database_url_resolvida()
 if _db_url.startswith("sqlite"):
-    engine_kwargs["connect_args"] = {"check_same_thread": False}
+    engine_kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
 
 engine = create_engine(_db_url, **engine_kwargs)
+
+
+if _db_url.startswith("sqlite"):
+    @event.listens_for(engine, "connect")
+    def _sqlite_pragmas(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA busy_timeout=30000")
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+        finally:
+            cursor.close()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, future=True)
 
 
@@ -58,6 +71,21 @@ def init_db() -> None:
     _import_crypto_events()
     _migrate_clientes_encryption_data()
     _seed_diretor_conta()
+    _run_alembic_migrations()
+
+
+def _run_alembic_migrations() -> None:
+    """Registra o schema atual como baseline e aplica revisÃµes futuras."""
+    from alembic import command
+    from alembic.config import Config
+
+    config_path = BASE_DIR / "alembic.ini"
+    if not config_path.is_file():
+        return
+    cfg = Config(str(config_path))
+    cfg.set_main_option("script_location", str(BASE_DIR / "alembic"))
+    cfg.set_main_option("sqlalchemy.url", _db_url)
+    command.upgrade(cfg, "head")
 
 
 def _seed_diretor_conta() -> None:
@@ -204,6 +232,10 @@ def _migrate_usuarios_columns() -> None:
             )
         if "recovery_token_enc" not in cols:
             conn.execute(text("ALTER TABLE usuarios ADD COLUMN recovery_token_enc TEXT"))
+        if "session_version" not in cols:
+            conn.execute(
+                text("ALTER TABLE usuarios ADD COLUMN session_version INTEGER DEFAULT 1 NOT NULL")
+            )
 
 
 def _migrate_diretor_protegido() -> None:
@@ -246,6 +278,32 @@ def _migrate_envios_columns() -> None:
             conn.execute(
                 text("ALTER TABLE envios ADD COLUMN arquivo_colocado_por VARCHAR(150)")
             )
+        if "nome_boleto" not in cols:
+            conn.execute(text("ALTER TABLE envios ADD COLUMN nome_boleto VARCHAR(500)"))
+        if "caminho_backup_boleto" not in cols:
+            conn.execute(text("ALTER TABLE envios ADD COLUMN caminho_backup_boleto VARCHAR(500)"))
+        if "arquivo_sha256" not in cols:
+            conn.execute(text("ALTER TABLE envios ADD COLUMN arquivo_sha256 VARCHAR(64)"))
+        if "idempotency_key" not in cols:
+            conn.execute(text("ALTER TABLE envios ADD COLUMN idempotency_key VARCHAR(64)"))
+        if "provider_message_id" not in cols:
+            conn.execute(text("ALTER TABLE envios ADD COLUMN provider_message_id VARCHAR(255)"))
+        if "delivery_status" not in cols:
+            conn.execute(text("ALTER TABLE envios ADD COLUMN delivery_status VARCHAR(40)"))
+        if "delivery_updated_at" not in cols:
+            conn.execute(text("ALTER TABLE envios ADD COLUMN delivery_updated_at DATETIME"))
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_envios_idempotency_key "
+                "ON envios (idempotency_key)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_envios_provider_message_id "
+                "ON envios (provider_message_id)"
+            )
+        )
 
 
 def _migrate_avulso_para_manual() -> None:

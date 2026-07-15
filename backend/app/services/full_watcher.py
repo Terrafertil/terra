@@ -21,6 +21,7 @@ from . import (
     cliente_crypto,
     soc_service,
     file_provenance,
+    upload_service,
 )
 
 
@@ -66,6 +67,7 @@ class FullWatcher:
                 interval = rc.full_scan_interval_seconds if rc else settings.full_scan_interval_seconds
                 exec_time = rc.full_scan_exec_time if rc else "08:00"
                 rescan_horas = rc.full_rescan_horas if rc else 1
+                soc_locked = soc_service.is_soc_locked(db)
             finally:
                 db.close()
 
@@ -73,7 +75,7 @@ class FullWatcher:
 
             if scan_active and modo_ativo:
                 try:
-                    if soc_service.is_soc_locked(db):
+                    if soc_locked:
                         log.warning("FULL ignorado: modo SOC ativo")
                     elif self._deve_executar_agora(exec_time, rescan_horas):
                         self._scan_completo(pasta)
@@ -206,6 +208,7 @@ class FullWatcher:
     def _processar_um(self, db: Session, pdf: Path, *, tipo_codigo: str | None) -> None:
         senha_pdf = pdf_service.ler_senha_arquivo_auxiliar(pdf)
         try:
+            upload_service.validate_existing_pdf(pdf)
             dados = pdf_service.extrair_dados(
                 pdf,
                 usar_ocr=settings.ocr_enabled,

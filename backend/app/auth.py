@@ -7,11 +7,13 @@ está preparado para ativar o login depois, apenas trocando AUTH_ENABLED=true
 no .env.
 """
 from datetime import datetime, timedelta, timezone
+import secrets
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
+import jwt
+from jwt import InvalidTokenError
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
@@ -41,6 +43,7 @@ def token_extra(user: models.Usuario) -> dict:
         "is_admin": user.is_admin,
         "is_diretor": is_diretor(user),
         "must_change_password": user.must_change_password,
+        "sv": int(getattr(user, "session_version", 1) or 1),
     }
 
 
@@ -48,7 +51,15 @@ def criar_token(subject: str, extra: dict | None = None) -> str:
     exp = datetime.now(timezone.utc) + timedelta(
         minutes=settings.access_token_expire_minutes
     )
-    payload = {"sub": subject, "exp": exp}
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": subject,
+        "exp": exp,
+        "iat": now,
+        "jti": secrets.token_urlsafe(16),
+        "iss": settings.jwt_issuer,
+        "aud": settings.jwt_audience,
+    }
     if extra:
         payload.update(extra)
     return jwt.encode(payload, settings.secret_key, algorithm="HS256")
@@ -84,8 +95,15 @@ def usuario_tem_acesso_backup(user: models.Usuario) -> bool:
 
 def _decodar(token: str) -> dict:
     try:
-        return jwt.decode(token, settings.secret_key, algorithms=["HS256"])
-    except JWTError as e:
+        return jwt.decode(
+            token,
+            settings.secret_key,
+            algorithms=["HS256"],
+            issuer=settings.jwt_issuer,
+            audience=settings.jwt_audience,
+            options={"require": ["sub", "exp", "iat", "jti", "iss", "aud"]},
+        )
+    except InvalidTokenError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Token inválido: {e}",
@@ -100,6 +118,7 @@ def require_user(
     if not settings.auth_enabled:
         return _anon_user()
 
+    token = token or request.cookies.get(settings.auth_cookie_name)
     if not token:
         raise HTTPException(status_code=401, detail="Token ausente")
 
@@ -111,6 +130,10 @@ def require_user(
     user = db.query(models.Usuario).filter(models.Usuario.username == username).first()
     if not user or not user.ativo:
         raise HTTPException(status_code=401, detail="Usuário inválido ou inativo")
+
+    token_version = int(data.get("sv", 0) or 0)
+    if token_version != int(getattr(user, "session_version", 1) or 1):
+        raise HTTPException(status_code=401, detail="SessÃ£o expirada. Entre novamente.")
 
     return user
 

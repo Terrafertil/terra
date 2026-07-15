@@ -46,9 +46,7 @@ async function enviar() {
       senha_nova: senhaNova.value,
       senha_nova_confirmacao: senhaNova2.value,
     })
-    auth.aplicarToken(data.access_token)
-    auth.user = data.user
-    auth.mustChangePassword = false
+    auth.aplicarUsuario(data.user)
     ok.value = data.mensagem
     setTimeout(() => router.replace('/dashboard'), 800)
   } catch (e) {

@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     app_host: str = "0.0.0.0"
     app_port: int = 8000
     app_debug: bool = False
+    docs_enabled: bool = False
 
     # Banco
     database_url: str = "sqlite:///./data/envio.db"
@@ -37,6 +38,11 @@ class Settings(BaseSettings):
     auth_enabled: bool = False
     secret_key: str = "troque-essa-chave"
     access_token_expire_minutes: int = 480
+    auth_cookie_name: str = "tf_session"
+    auth_cookie_secure: bool = False
+    backend_access_cookie_name: str = "tf_backend_access"
+    jwt_issuer: str = "terra-fertil-envios"
+    jwt_audience: str = "terra-fertil-painel"
     admin_username: str = "admin"
     admin_password: str = "admin"
     diretor_username: str = "admindiretor"
@@ -45,42 +51,65 @@ class Settings(BaseSettings):
     diretor_recovery_token: str = ""
 
     # CORS
-    cors_origins: str = "*"
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
-    # SMTP (AWS SES — relay SMTP com anexo PDF; não usa SDK boto3)
+    # SMTP transacional (Brevo — relay SMTP com anexo PDF)
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_user: str = Field(
         default="",
-        validation_alias=AliasChoices("SMTP_USER", "AWS_SES_SMTP_USER"),
+        validation_alias=AliasChoices("SMTP_USER", "BREVO_SMTP_LOGIN"),
     )
     smtp_password: str = Field(
         default="",
-        validation_alias=AliasChoices("SMTP_PASSWORD", "AWS_SES_SMTP_PASSWORD"),
+        validation_alias=AliasChoices("SMTP_PASSWORD", "BREVO_SMTP_KEY"),
     )
     smtp_use_tls: bool = True
+    smtp_use_ssl: bool = False
     smtp_from_email: str = Field(
         default="",
-        validation_alias=AliasChoices("SMTP_FROM_EMAIL", "AWS_SES_FROM_EMAIL"),
+        validation_alias=AliasChoices("SMTP_FROM_EMAIL", "BREVO_SENDER_EMAIL"),
     )
     smtp_from_name: str = Field(
         default="Sistema de Envio",
-        validation_alias=AliasChoices("SMTP_FROM_NAME", "AWS_SES_FROM_NAME"),
+        validation_alias=AliasChoices("SMTP_FROM_NAME", "BREVO_SENDER_NAME"),
     )
-    use_aws_ses: bool = False
-    aws_ses_region: str = Field(
-        default="sa-east-1",
-        validation_alias=AliasChoices("AWS_SES_REGION", "AWS_REGION"),
-    )
+    use_brevo: bool = True
+    brevo_max_message_mb: int = 20
+    brevo_webhook_token: str = ""
 
     @model_validator(mode="after")
-    def _defaults_aws_ses(self):
-        if self.use_aws_ses and not (self.smtp_host or "").strip():
-            reg = (self.aws_ses_region or "sa-east-1").strip()
-            self.smtp_host = f"email-smtp.{reg}.amazonaws.com"
-            self.smtp_port = 587
+    def _defaults_brevo(self):
+        if not self.use_brevo:
+            return self
+
+        host = (self.smtp_host or "").strip().lower()
+        # Migração segura: um .env antigo do SES não pode continuar enviando pela AWS.
+        if not host or host.endswith(".amazonaws.com"):
+            self.smtp_host = "smtp-relay.brevo.com"
+
+        # A porta 465 usa TLS implícito; 587/2525 usam STARTTLS.
+        if self.smtp_port == 465:
+            self.smtp_use_ssl = True
+            self.smtp_use_tls = False
+        elif self.smtp_port in (587, 2525):
+            self.smtp_use_ssl = False
             self.smtp_use_tls = True
         return self
+
+    @property
+    def email_provider(self) -> str:
+        return "brevo" if self.use_brevo else "smtp"
+
+    @property
+    def email_configured(self) -> bool:
+        obrigatorios = (
+            self.smtp_host,
+            self.smtp_user,
+            self.smtp_password,
+            self.smtp_from_email,
+        )
+        return all(bool((valor or "").strip()) for valor in obrigatorios)
 
     email_subject_default: str = "Envio de Apolice - {numero_apolice}"
     email_template_default: str = "templates/email_padrao.html"
@@ -97,8 +126,12 @@ class Settings(BaseSettings):
     backup_folder: str = "./backup"
     # Política interna: após N meses a equipe pode apagar pastas antigas em backup/ (ver Tutorial)
     backup_retention_months: int = 24
+    backup_retention_auto: bool = False
+    max_backup_zip_mb: int = 2048
     upload_folder: str = "./uploads"
     processed_folder: str = "./processados"
+    max_upload_mb: int = 25
+    max_pdf_pages: int = 300
 
     # Capa
     capa_enabled: bool = True

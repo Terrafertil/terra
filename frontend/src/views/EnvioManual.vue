@@ -3,6 +3,7 @@ import { ref, onMounted, reactive, computed, watch } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import { api } from '../api'
 import { useUiStore } from '../stores/ui'
+import { sanitizeEmailHtml } from '../utils/sanitizeEmail'
 
 const ui = useUiStore()
 
@@ -69,6 +70,7 @@ const erro = ref('')
 const ok = ref('')
 const ultimoEnvio = ref(null)
 const demo = ref(null)
+const demoHtmlSeguro = computed(() => sanitizeEmailHtml(demo.value?.html))
 const analise = ref(null)
 const analisando = ref(false)
 const pdfPreviewUrl = ref(null)
@@ -463,7 +465,7 @@ onMounted(async () => {
       <p><strong>Para:</strong> {{ demo.para }}</p>
       <p><strong>Assunto:</strong> {{ demo.assunto }}</p>
       <hr />
-      <div class="email-preview" v-html="demo.html"></div>
+      <div class="email-preview" v-html="demoHtmlSeguro"></div>
     </div>
 
     <div v-if="ultimoEnvio" class="card mt-4">

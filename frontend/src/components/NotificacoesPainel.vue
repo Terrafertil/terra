@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import { api } from '../api'
 import { useUiStore } from '../stores/ui'
@@ -8,17 +8,15 @@ const ui = useUiStore()
 const lista = ref([])
 const carregando = ref(false)
 const expandido = ref(true)
-let timer = null
 
 async function carregar() {
   carregando.value = true
   try {
-    const [n, c] = await Promise.all([
+    const [n] = await Promise.all([
       api.get('/api/notificacoes', { params: { apenas_nao_lidas: true, limite: 20 } }),
-      api.get('/api/notificacoes/contagem'),
+      ui.atualizarContagemNotificacoes(),
     ])
     lista.value = n.data
-    ui.notificacoesNaoLidas = c.data?.nao_lidas ?? 0
   } catch {
     /* API offline */
   } finally {
@@ -38,11 +36,6 @@ async function marcarTodas() {
 
 onMounted(() => {
   carregar()
-  timer = setInterval(carregar, 30000)
-})
-
-onUnmounted(() => {
-  if (timer) clearInterval(timer)
 })
 
 defineExpose({ carregar })

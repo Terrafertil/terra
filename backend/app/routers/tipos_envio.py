@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..database import get_db
 from .. import models, schemas
-from ..auth import require_user
+from ..auth import require_user, require_admin
 
 
 router = APIRouter(prefix="/api/tipos-envio", tags=["tipos-envio"])
@@ -56,7 +56,7 @@ def obter(tid: int, db: Session = Depends(get_db), _=Depends(require_user)):
 def criar(
     payload: schemas.TipoEnvioCreate,
     db: Session = Depends(get_db),
-    _=Depends(require_user),
+    _=Depends(require_admin),
 ):
     if db.query(models.TipoEnvio).filter(models.TipoEnvio.codigo == payload.codigo).first():
         raise HTTPException(400, "Código já existe")
@@ -85,7 +85,7 @@ def atualizar(
     tid: int,
     payload: schemas.TipoEnvioUpdate,
     db: Session = Depends(get_db),
-    _=Depends(require_user),
+    _=Depends(require_admin),
 ):
     t = db.get(models.TipoEnvio, tid)
     if not t:
@@ -121,7 +121,7 @@ def atualizar(
 
 
 @router.delete("/{tid}", status_code=204)
-def remover(tid: int, db: Session = Depends(get_db), _=Depends(require_user)):
+def remover(tid: int, db: Session = Depends(get_db), _=Depends(require_admin)):
     t = db.get(models.TipoEnvio, tid)
     if not t:
         raise HTTPException(404, "Tipo de envio não encontrado")
@@ -133,7 +133,7 @@ def remover(tid: int, db: Session = Depends(get_db), _=Depends(require_user)):
 def reordenar(
     payload: schemas.TipoEnvioOrdemPatch,
     db: Session = Depends(get_db),
-    _=Depends(require_user),
+    _=Depends(require_admin),
 ):
     """Reordena os tipos pela lista de codigos enviada."""
     for idx, codigo in enumerate(payload.ordem, start=1):

@@ -13,6 +13,7 @@ const ui = useUiStore()
 const router = useRouter()
 
 const mostrarUsuarios = computed(() => auth.authEnabled && Boolean(auth.user?.is_admin))
+const mostrarAdministracao = computed(() => !auth.authEnabled || Boolean(auth.user?.is_admin))
 const mostrarBackup = computed(() => !auth.authEnabled || auth.podeAcessarBackup)
 const mostrarTour = ref(false)
 
@@ -20,16 +21,6 @@ const linksFixos = [
   { to: '/dashboard', label: 'Dashboard', destaque: false },
   { to: '/tutorial', label: 'Tutorial', destaque: true },
 ]
-
-let pollTimer = null
-
-async function atualizarNotificacoes() {
-  try {
-    const { data } = await api.get('/api/notificacoes/contagem')
-    ui.notificacoesNaoLidas = data?.nao_lidas ?? 0
-  } catch {
-  }
-}
 
 async function carregarStatusOcr() {
   try {
@@ -41,8 +32,8 @@ async function carregarStatusOcr() {
   }
 }
 
-function sair() {
-  auth.logout()
+async function sair() {
+  await auth.logout()
   router.push({ name: 'login' })
 }
 
@@ -68,13 +59,11 @@ function iniciarTour() {
 
 onMounted(async () => {
   carregarStatusOcr()
-  if (auth.authEnabled && auth.token && !auth.user) {
+  ui.iniciarPollingNotificacoes()
+  if (auth.authEnabled && !auth.user) {
     await auth.carregarUsuario()
   }
   avaliarTourAutomatico()
-  pollTimer = setInterval(() => {
-    atualizarNotificacoes()
-  }, 30000)
 })
 
 watch(
@@ -85,7 +74,7 @@ watch(
 )
 
 onUnmounted(() => {
-  if (pollTimer) clearInterval(pollTimer)
+  ui.pararPollingNotificacoes()
 })
 </script>
 
@@ -114,11 +103,11 @@ onUnmounted(() => {
         <RouterLink class="nav-link" to="/envio">Envio Manual</RouterLink>
         <RouterLink class="nav-link" to="/clientes">Clientes</RouterLink>
         <RouterLink class="nav-link" to="/autos">Autos</RouterLink>
-        <RouterLink class="nav-link" to="/full-config">FULL — Configuração</RouterLink>
-        <RouterLink class="nav-link" to="/tipos-envio">Tipos de Envio</RouterLink>
-        <RouterLink class="nav-link" to="/corpos-email">Corpos de E-mail</RouterLink>
-        <RouterLink class="nav-link" to="/assinaturas">Assinaturas</RouterLink>
-        <RouterLink class="nav-link" to="/capa">Capa</RouterLink>
+        <RouterLink v-if="mostrarAdministracao" class="nav-link" to="/full-config">FULL — Configuração</RouterLink>
+        <RouterLink v-if="mostrarAdministracao" class="nav-link" to="/tipos-envio">Tipos de Envio</RouterLink>
+        <RouterLink v-if="mostrarAdministracao" class="nav-link" to="/corpos-email">Corpos de E-mail</RouterLink>
+        <RouterLink v-if="mostrarAdministracao" class="nav-link" to="/assinaturas">Assinaturas</RouterLink>
+        <RouterLink v-if="mostrarAdministracao" class="nav-link" to="/capa">Capa</RouterLink>
         <RouterLink v-if="mostrarBackup" class="nav-link" to="/backup">Backup</RouterLink>
         <RouterLink class="nav-link" to="/historico">Histórico</RouterLink>
         <RouterLink v-if="mostrarUsuarios" class="nav-link" to="/usuarios">Usuários</RouterLink>

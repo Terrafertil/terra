@@ -1,12 +1,13 @@
 """Browser de backup: navegação por sub-pastas e download (1 ou vários como zip)."""
 from datetime import datetime
-from io import BytesIO
 from pathlib import Path
+import tempfile
 from urllib.parse import unquote
 import zipfile
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
 from ..config import settings
 from .. import schemas
@@ -98,25 +99,46 @@ def download_zip(
     if not caminhos:
         raise HTTPException(400, "Nenhum caminho informado")
 
-    buf = BytesIO()
-    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for c in caminhos:
-            p = _resolver(c)
-            if p.is_file():
-                zf.write(p, arcname=p.name)
-            elif p.is_dir():
-                root = _root().resolve()
-                for sub in p.rglob("*"):
-                    if sub.is_file():
-                        try:
-                            arc = sub.resolve().relative_to(root.parent).as_posix()
-                        except Exception:
-                            arc = sub.name
-                        zf.write(sub, arcname=arc)
-    buf.seek(0)
+    root = _root().resolve()
+    arquivos: dict[Path, str] = {}
+    for c in caminhos:
+        p = _resolver(c)
+        candidatos = [p] if p.is_file() else p.rglob("*") if p.is_dir() else []
+        for sub in candidatos:
+            if not sub.is_file():
+                continue
+            resolved = sub.resolve()
+            try:
+                arc = resolved.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            arquivos[resolved] = arc
+            if len(arquivos) > 10_000:
+                raise HTTPException(413, "SeleÃ§Ã£o excede o limite de 10.000 arquivos.")
+
+    limite = max(1, settings.max_backup_zip_mb) * 1024 * 1024
+    tamanho_total = sum(path.stat().st_size for path in arquivos)
+    if tamanho_total > limite:
+        raise HTTPException(
+            413,
+            f"SeleÃ§Ã£o excede o limite de {settings.max_backup_zip_mb} MB para ZIP.",
+        )
+
+    temp = tempfile.NamedTemporaryFile(prefix="backup_", suffix=".zip", delete=False)
+    temp_path = Path(temp.name)
+    temp.close()
+    try:
+        with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for path, arc in arquivos.items():
+                zf.write(path, arcname=arc)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
     nome_zip = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
-    return StreamingResponse(
-        buf,
+    return FileResponse(
+        str(temp_path),
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{nome_zip}"'},
+        filename=nome_zip,
+        background=BackgroundTask(temp_path.unlink, missing_ok=True),
     )

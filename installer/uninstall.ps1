@@ -5,7 +5,8 @@
 [CmdletBinding()]
 param(
     [string]$InstallDir = "C:\envio-sistema",
-    [switch]$KeepData
+    [switch]$KeepData,
+    [switch]$RemoveData
 )
 
 $ErrorActionPreference = "Continue"
@@ -13,7 +14,8 @@ $ErrorActionPreference = "Continue"
 function Write-Step($m) { Write-Host "==> $m" -ForegroundColor Cyan }
 function Write-Ok($m)   { Write-Host "[OK] $m" -ForegroundColor Green }
 
-$nssm = (Get-Command nssm -ErrorAction SilentlyContinue)?.Source
+$nssmCommand = Get-Command nssm -ErrorAction SilentlyContinue
+$nssm = if ($nssmCommand) { $nssmCommand.Source } else { $null }
 if (-not $nssm) { $nssm = "C:\tools\nssm\nssm.exe" }
 
 foreach ($svc in @("EnvioApolices-API", "EnvioApolices-Front")) {
@@ -28,13 +30,19 @@ Write-Step "Removendo regras de firewall"
 Remove-NetFirewallRule -DisplayName "EnvioApolices-API"   -ErrorAction SilentlyContinue
 Remove-NetFirewallRule -DisplayName "EnvioApolices-Front" -ErrorAction SilentlyContinue
 
-if (-not $KeepData) {
-    Write-Step "Removendo $InstallDir"
-    if (Test-Path $InstallDir) {
-        Remove-Item -Recurse -Force $InstallDir
+if ($RemoveData) {
+    $resolvedInstallDir = [System.IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
+    $driveRoot = [System.IO.Path]::GetPathRoot($resolvedInstallDir).TrimEnd('\')
+    if (-not $resolvedInstallDir -or $resolvedInstallDir -eq $driveRoot) {
+        throw "InstallDir inseguro para remoção: $InstallDir"
+    }
+    Write-Step "Removendo $resolvedInstallDir"
+    if (Test-Path -LiteralPath $resolvedInstallDir) {
+        Remove-Item -LiteralPath $resolvedInstallDir -Recurse -Force
     }
 } else {
-    Write-Step "Mantendo pasta $InstallDir (parâmetro -KeepData)"
+    Write-Step "Mantendo $InstallDir por segurança (banco, PDFs, .env e chave de criptografia)"
+    Write-Step "Para apagar definitivamente, execute novamente com -RemoveData"
 }
 
 Write-Ok "Desinstalação concluída"
