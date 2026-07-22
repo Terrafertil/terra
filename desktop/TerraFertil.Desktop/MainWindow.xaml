@@ -1,0 +1,35 @@
+<Window x:Class="TerraFertil.Desktop.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        Title="Terra Fértil" Icon="Assets/TerraFertil.ico"
+        Width="1280" Height="800" MinWidth="900" MinHeight="600"
+        WindowStartupLocation="CenterScreen" WindowState="Maximized"
+        WindowStyle="SingleBorderWindow" ResizeMode="CanResize"
+        Background="#F3F7F3">
+    <Grid>
+        <wv2:WebView2 x:Name="Browser" Visibility="Collapsed" />
+        <Grid x:Name="LoadingPanel" Background="#F3F7F3">
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                <TextBlock Text="Terra Fértil" FontSize="32" FontWeight="SemiBold"
+                           Foreground="#215B35" HorizontalAlignment="Center" />
+                <TextBlock Text="Conectando ao servidor…" Margin="0,14,0,0" FontSize="15"
+                           Foreground="#52635A" HorizontalAlignment="Center" />
+                <ProgressBar IsIndeterminate="True" Width="260" Height="5" Margin="0,24,0,0" />
+            </StackPanel>
+        </Grid>
+        <Grid x:Name="OfflinePanel" Background="#F3F7F3" Visibility="Collapsed">
+            <Border Background="White" CornerRadius="12" Padding="38" Width="520"
+                    HorizontalAlignment="Center" VerticalAlignment="Center">
+                <StackPanel>
+                    <TextBlock Text="Servidor indisponível" FontSize="26" FontWeight="SemiBold"
+                               Foreground="#8A2E2E" HorizontalAlignment="Center" />
+                    <TextBlock x:Name="OfflineMessage" Margin="0,16,0,0" TextWrapping="Wrap"
+                               TextAlignment="Center" FontSize="15" Foreground="#52635A" />
+                    <Button Content="Tentar novamente" Click="Retry_Click" Margin="0,26,0,0"
+                            Padding="24,10" HorizontalAlignment="Center" Cursor="Hand" />
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>

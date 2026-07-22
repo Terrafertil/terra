@@ -38,3 +38,9 @@ backend/logs/
 .idea/
 *.swp
 .DS_Store
+
+# Aplicativo Windows
+desktop/**/bin/
+desktop/**/obj/
+desktop/publish/
+.dotnet-sdk/
