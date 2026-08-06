@@ -412,18 +412,33 @@ def _extrair_generico(dados: DadosPDF) -> None:
         if m:
             dados.cpf = _limpar_doc(m.group(1))
 
-    # CNPJ solto costuma ser da seguradora — só usa com rótulo explícito se já há CPF do segurado
-    if not dados.cnpj and not dados.cpf:
-        m = RE_CNPJ_ROTULO.search(texto)
-        if m:
-            dados.cnpj = _limpar_doc(m.group(1))
-    elif not dados.cnpj:
-        m = RE_CNPJ_ROTULO.search(texto)
-        if m:
-            # ignora CNPJ da própria seguradora quando o segurado já tem CPF
-            trecho = texto[max(0, m.start() - 40) : m.start()].upper()
-            if not any(x in trecho for x in ("SOMPO", "TOKIO", "YELUM", "SEGUROS S", "S/A", "S.A")):
+    # CNPJ solto costuma ser da seguradora — só aceita perto de âncora de segurado.
+    _MARCAS_SEGURADORA = (
+        "SOMPO",
+        "TOKIO",
+        "YELUM",
+        "PORTO",
+        "SULAMERICA",
+        "SULAMÉRICA",
+        "MAPFRE",
+        "BRADESCO",
+        "LIBERTY",
+        "SEGUROS S",
+        "S/A",
+        "S.A",
+        "SUSEP",
+    )
+    if not dados.cnpj:
+        for m in RE_CNPJ_ROTULO.finditer(texto):
+            trecho = texto[max(0, m.start() - 80) : min(len(texto), m.end() + 40)].upper()
+            if any(x in trecho for x in _MARCAS_SEGURADORA):
+                continue
+            if any(
+                x in trecho
+                for x in ("SEGURADO", "PROPONENTE", "CPF/CNPJ", "TOMADOR", "ESTIPULANTE")
+            ):
                 dados.cnpj = _limpar_doc(m.group(1))
+                break
 
     if not dados.numero_apolice:
         dados.numero_apolice = _extrair_apolice_do_texto(texto)

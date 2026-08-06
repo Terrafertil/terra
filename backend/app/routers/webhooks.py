@@ -80,11 +80,21 @@ async def webhook_brevo(request: Request, db: Session = Depends(get_db)):
 
     if message_id:
         envio.provider_message_id = message_id
+    falhas_terminais = {
+        "soft_bounce",
+        "hard_bounce",
+        "bounce",
+        "blocked",
+        "invalid",
+        "error",
+        "deferred",
+    }
     if event in _DELIVERY_EVENTS:
         envio.delivery_status = _DELIVERY_EVENTS[event]
     elif event in {"opened", "unique_opened", "proxy_open", "click"}:
-        # NÃ£o rebaixa o estado entregue; esses eventos sÃ£o apenas engajamento.
-        if envio.delivery_status not in {"delivered"}:
+        # Não sobrescreve entregue nem falhas terminais (bounce/blocked).
+        atual = (envio.delivery_status or "").lower()
+        if atual not in falhas_terminais | {"delivered"}:
             envio.delivery_status = event
     timestamp = payload.get("ts_event") or payload.get("ts")
     try:

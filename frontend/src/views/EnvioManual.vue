@@ -124,6 +124,12 @@ watch(clienteId, () => {
   autoId.value = null
 })
 
+watch(emailDestino, () => {
+  if (mostrarConfirmacao.value) {
+    confirmouEmail.value = false
+  }
+})
+
 function aplicarDadosDaAnalise(data) {
   if (data.numero_apolice) {
     numeroApolice.value = data.numero_apolice
@@ -238,15 +244,29 @@ function fecharConfirmacao() {
 
 async function enviar() {
   erro.value = ''; ok.value = ''; ultimoEnvio.value = null
-  if (!validar({ exigirArquivo: true })) return
+  if (!validar({ exigirArquivo: true })) {
+    mostrarConfirmacao.value = false
+    return
+  }
+  if (analisando.value) {
+    erro.value = 'Aguarde o fim da análise do PDF antes de enviar'
+    mostrarConfirmacao.value = false
+    return
+  }
   enviando.value = true
   try {
     const { data } = await api.post('/api/envios/manual', montarFormData(), {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
     ultimoEnvio.value = data
-    if (data.status === 'enviado') ok.value = `Enviado com sucesso para cliente ${data.cliente_id}`
-    else erro.value = `Status "${data.status}": ${data.erro_msg || ''}`
+    if (data.status === 'enviado') {
+      const dest = data.cliente_email || emailDestino.value || `cliente ${data.cliente_id}`
+      ok.value =
+        `SMTP aceitou o envio para ${dest}. ` +
+        'Se não chegar, confira spam e o painel Brevo (remetente/domínio autenticados).'
+    } else {
+      erro.value = `Status "${data.status}": ${data.erro_msg || 'falha no envio'}`
+    }
     await carregarOpcoes()
   } catch (e) {
     erro.value = e.response?.data?.detail || 'Falha no envio'
@@ -265,7 +285,7 @@ async function confirmarEEnviar() {
 }
 
 async function demonstrar() {
-  erro.value = ''; demo.value = null
+  erro.value = ''; ok.value = ''; demo.value = null; ultimoEnvio.value = null
   if (!validar({ exigirArquivo: false })) return
   demonstrando.value = true
   try {
@@ -470,10 +490,10 @@ onMounted(async () => {
       </div>
 
       <div class="flex gap-2">
-        <button type="submit" class="btn btn-accent" :disabled="enviando">
-          {{ enviando ? 'Enviando...' : 'Enviar agora' }}
+        <button type="submit" class="btn btn-accent" :disabled="enviando || analisando">
+          {{ enviando ? 'Enviando...' : analisando ? 'A analisar PDF…' : 'Enviar agora' }}
         </button>
-        <button type="button" class="btn btn-ghost" :disabled="demonstrando" @click="demonstrar">
+        <button type="button" class="btn btn-ghost" :disabled="demonstrando || analisando" @click="demonstrar">
           {{ demonstrando ? 'Gerando...' : 'Demonstrar e-mail' }}
         </button>
       </div>
@@ -522,7 +542,12 @@ onMounted(async () => {
     <div v-if="ultimoEnvio" class="card mt-4">
       <h3>Último envio</h3>
       <p>ID: <strong>{{ ultimoEnvio.id }}</strong></p>
+      <p>Para: <strong>{{ ultimoEnvio.cliente_email || '—' }}</strong></p>
+      <p>Assunto: {{ ultimoEnvio.assunto_email || '—' }}</p>
       <p>Status: <span class="badge" :class="ultimoEnvio.status">{{ ultimoEnvio.status }}</span></p>
+      <p v-if="ultimoEnvio.delivery_status">
+        Entrega (Brevo): <strong>{{ ultimoEnvio.delivery_status }}</strong>
+      </p>
       <p v-if="ultimoEnvio.erro_msg" class="text-muted">Erro: {{ ultimoEnvio.erro_msg }}</p>
     </div>
   </div>

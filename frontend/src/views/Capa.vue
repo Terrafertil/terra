@@ -1,6 +1,6 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
-import { api, API_BASE_URL } from '../api'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { api } from '../api'
 
 const info = ref(null)
 const erro = ref('')
@@ -9,11 +9,6 @@ const carregando = ref(false)
 const enviando = ref(false)
 const arquivo = ref(null)
 const previewUrl = ref('')
-
-const urlVisualizar = computed(() => {
-  if (!info.value?.existe) return ''
-  return `${API_BASE_URL}/api/capa/visualizar?_=${Date.now()}`
-})
 
 function fmtBytes(n) {
   if (!n) return '—'
@@ -26,12 +21,31 @@ function fmtData(d) {
   return d ? new Date(d).toLocaleString() : '—'
 }
 
+function revogarPreview() {
+  if (previewUrl.value && String(previewUrl.value).startsWith('blob:')) {
+    URL.revokeObjectURL(previewUrl.value)
+  }
+  previewUrl.value = ''
+}
+
+async function carregarPreviewBlob() {
+  revogarPreview()
+  try {
+    const { data } = await api.get('/api/capa/visualizar', { responseType: 'blob' })
+    previewUrl.value = URL.createObjectURL(data)
+  } catch {
+    previewUrl.value = ''
+  }
+}
+
 async function carregar() {
-  carregando.value = true; erro.value = ''
+  carregando.value = true
+  erro.value = ''
   try {
     const { data } = await api.get('/api/capa')
     info.value = data
-    if (data.existe) previewUrl.value = urlVisualizar.value
+    if (data.existe) await carregarPreviewBlob()
+    else revogarPreview()
   } catch (e) {
     erro.value = e.response?.data?.detail || 'Erro ao carregar info da capa'
   } finally {
@@ -44,8 +58,12 @@ function onArquivo(e) {
 }
 
 async function enviar() {
-  erro.value = ''; ok.value = ''
-  if (!arquivo.value) { erro.value = 'Selecione um PDF'; return }
+  erro.value = ''
+  ok.value = ''
+  if (!arquivo.value) {
+    erro.value = 'Selecione um PDF'
+    return
+  }
   const fd = new FormData()
   fd.append('arquivo', arquivo.value)
   enviando.value = true
@@ -56,7 +74,7 @@ async function enviar() {
     info.value = data
     ok.value = `Capa atualizada como ${data.nome}.`
     arquivo.value = null
-    previewUrl.value = `${API_BASE_URL}/api/capa/visualizar?_=${Date.now()}`
+    await carregarPreviewBlob()
   } catch (e) {
     erro.value = e.response?.data?.detail || 'Erro no upload'
   } finally {
@@ -66,7 +84,8 @@ async function enviar() {
 
 async function remover() {
   if (!confirm('Remover a capa atual?')) return
-  erro.value = ''; ok.value = ''
+  erro.value = ''
+  ok.value = ''
   try {
     await api.delete('/api/capa')
     ok.value = 'Capa removida.'
@@ -76,7 +95,19 @@ async function remover() {
   }
 }
 
+async function abrirNovaAba() {
+  try {
+    const { data } = await api.get('/api/capa/visualizar', { responseType: 'blob' })
+    const url = URL.createObjectURL(data)
+    window.open(url, '_blank', 'noopener')
+    setTimeout(() => URL.revokeObjectURL(url), 60_000)
+  } catch (e) {
+    erro.value = e.response?.data?.detail || 'Não foi possível abrir a capa'
+  }
+}
+
 onMounted(carregar)
+onBeforeUnmount(revogarPreview)
 </script>
 
 <template>
@@ -88,7 +119,7 @@ onMounted(carregar)
     </p>
 
     <div v-if="erro" class="alert alert-err">{{ erro }}</div>
-    <div v-if="ok"   class="alert alert-ok">{{ ok }}</div>
+    <div v-if="ok" class="alert alert-ok">{{ ok }}</div>
 
     <div class="card">
       <h3>Capa atual</h3>
@@ -99,7 +130,7 @@ onMounted(carregar)
         <p><strong>Tamanho:</strong> {{ fmtBytes(info.tamanho_bytes) }} · <strong>Páginas:</strong> {{ info.paginas }}</p>
         <p><strong>Atualizada em:</strong> {{ fmtData(info.atualizado_em) }}</p>
         <div class="flex gap-2 mt-2">
-          <a class="btn btn-ghost btn-sm" :href="urlVisualizar" target="_blank" rel="noopener">Visualizar PDF</a>
+          <button type="button" class="btn btn-ghost btn-sm" @click="abrirNovaAba">Visualizar PDF</button>
           <button class="btn btn-danger btn-sm" @click="remover">Remover capa</button>
         </div>
         <iframe
@@ -118,7 +149,7 @@ onMounted(carregar)
       <input type="file" accept="application/pdf" @change="onArquivo" />
       <div class="mt-2">
         <button class="btn btn-accent" :disabled="enviando" @click="enviar">
-          {{ enviando ? 'Enviando...' : 'Substituir capa' }}
+          {{ enviando ? 'Enviando...' : 'Guardar capa' }}
         </button>
       </div>
     </div>
@@ -128,7 +159,7 @@ onMounted(carregar)
 <style scoped>
 .capa-preview {
   width: 100%;
-  height: 500px;
+  min-height: 480px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: #fff;

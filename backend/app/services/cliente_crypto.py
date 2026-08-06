@@ -62,38 +62,79 @@ def decrypt_many(clientes: Iterable[models.Cliente]) -> list[models.Cliente]:
     return out
 
 
+def _so_digitos(doc: str | None) -> str:
+    return "".join(ch for ch in (doc or "") if ch.isdigit())
+
+
+def _formatar_cpf(dig: str) -> str:
+    if len(dig) != 11:
+        return dig
+    return f"{dig[:3]}.{dig[3:6]}.{dig[6:9]}-{dig[9:]}"
+
+
+def _formatar_cnpj(dig: str) -> str:
+    if len(dig) != 14:
+        return dig
+    return f"{dig[:2]}.{dig[2:5]}.{dig[5:8]}/{dig[8:12]}-{dig[12:]}"
+
+
 def find_by_cpf(db: Session, cpf: str | None) -> models.Cliente | None:
     if not cpf:
         return None
+    dig = _so_digitos(cpf)
     if crypto.encryption_enabled():
-        h = crypto.field_hash(cpf, "cpf")
+        h = crypto.field_hash(dig or cpf, "cpf")
         if h:
             c = db.query(models.Cliente).filter(models.Cliente.cpf_hash == h).first()
             if c:
                 decrypt_cliente_fields(c)
                 return c
         return None
-    c = db.query(models.Cliente).filter(models.Cliente.cpf == cpf).first()
+    variantes = {v for v in (cpf, dig, _formatar_cpf(dig)) if v}
+    c = (
+        db.query(models.Cliente)
+        .filter(models.Cliente.cpf.in_(variantes))
+        .first()
+    )
     if c:
         decrypt_cliente_fields(c)
-    return c
+        return c
+    # Fallback: cadastros com formatação mista
+    if dig and len(dig) == 11:
+        for cand in db.query(models.Cliente).filter(models.Cliente.cpf.isnot(None)).all():
+            if _so_digitos(cand.cpf) == dig:
+                decrypt_cliente_fields(cand)
+                return cand
+    return None
 
 
 def find_by_cnpj(db: Session, cnpj: str | None) -> models.Cliente | None:
     if not cnpj:
         return None
+    dig = _so_digitos(cnpj)
     if crypto.encryption_enabled():
-        h = crypto.field_hash(cnpj, "cnpj")
+        h = crypto.field_hash(dig or cnpj, "cnpj")
         if h:
             c = db.query(models.Cliente).filter(models.Cliente.cnpj_hash == h).first()
             if c:
                 decrypt_cliente_fields(c)
                 return c
         return None
-    c = db.query(models.Cliente).filter(models.Cliente.cnpj == cnpj).first()
+    variantes = {v for v in (cnpj, dig, _formatar_cnpj(dig)) if v}
+    c = (
+        db.query(models.Cliente)
+        .filter(models.Cliente.cnpj.in_(variantes))
+        .first()
+    )
     if c:
         decrypt_cliente_fields(c)
-    return c
+        return c
+    if dig and len(dig) == 14:
+        for cand in db.query(models.Cliente).filter(models.Cliente.cnpj.isnot(None)).all():
+            if _so_digitos(cand.cnpj) == dig:
+                decrypt_cliente_fields(cand)
+                return cand
+    return None
 
 
 def get_by_id(db: Session, cid: int) -> models.Cliente | None:

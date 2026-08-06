@@ -59,22 +59,37 @@ def _chave_idempotencia(
 
 
 def _envio_existente_idempotente(db: Session, key: str) -> models.Envio | None:
+    """Evita duplicar envio bem-sucedido; permite nova tentativa após erro/pendente antigo."""
     envio = (
         db.query(models.Envio)
         .filter(models.Envio.idempotency_key == key)
         .first()
     )
-    if envio and envio.status == "pendente":
-        idade = datetime.utcnow() - envio.criado_em
-        if idade.total_seconds() >= 120:
-            envio.status = "erro"
-            envio.erro_msg = (
-                "Envio anterior ficou em estado incerto. A reexecuÃ§Ã£o automÃ¡tica foi "
-                "bloqueada para evitar duplicidade; revise e use Reenviar se necessÃ¡rio."
-            )
-            db.commit()
-            db.refresh(envio)
-    return envio
+    if not envio:
+        return None
+
+    # Já enviado com sucesso — não reenviar.
+    if envio.status == "enviado":
+        return envio
+
+    # Ainda em processamento recente — devolver o mesmo registo.
+    if envio.status == "pendente":
+        idade = datetime.utcnow() - (envio.criado_em or datetime.utcnow())
+        if idade.total_seconds() < 120:
+            return envio
+        envio.status = "erro"
+        envio.erro_msg = (
+            "Envio anterior ficou em estado incerto. A chave de idempotência foi "
+            "libertada para permitir nova tentativa automática ou manual."
+        )
+
+    # erro / pendente antigo: liberta a chave única para nova tentativa.
+    if envio.status == "erro":
+        envio.idempotency_key = f"{key}:retired:{envio.id}"
+        db.commit()
+        return None
+
+    return None
 
 
 def _resolver_caminho_capa() -> Path | None:

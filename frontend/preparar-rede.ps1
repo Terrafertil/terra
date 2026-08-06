@@ -120,24 +120,21 @@ if ($hostIp -eq '127.0.0.1') {
 }
 
 Write-Step "Atualizar $FeEnv"
-Set-DotEnvValue $FeEnv 'VITE_API_URL' $apiUrl
+# Vite em :5173 usa proxy /api → 127.0.0.1:8000. VITE_API_URL absoluto
+# quebra CSP (connect-src 'self') e cookies SameSite=Lax.
+Set-DotEnvValue $FeEnv 'VITE_API_URL' ''
+# Nunca gravar segredos com prefixo VITE_ (entram no bundle se importados).
+Set-DotEnvValue $FeEnv 'VITE_BACKEND_ACCESS_KEY' ''
 
 if (Test-Path $BeEnv) {
     $enabled = (Get-Content $BeEnv -Encoding UTF8 | Where-Object { $_ -match '^\s*BACKEND_ACCESS_ENABLED\s*=\s*true' })
-    $bkLine  = Get-Content $BeEnv -Encoding UTF8 | Where-Object { $_ -match '^\s*BACKEND_ACCESS_KEY\s*=' } | Select-Object -First 1
-    if ($bkLine -match '=\s*(.+)$') {
-        $bkVal = $Matches[1].Trim().Trim('"').Trim("'")
-        if ($bkVal -and $bkVal -notmatch 'cole-a') {
-            Set-DotEnvValue $FeEnv 'VITE_BACKEND_ACCESS_KEY' $bkVal
-            Write-Ok "Chave VITE_BACKEND_ACCESS_KEY alinhada com backend\.env"
-        } elseif ($enabled) {
-            Write-Warn "BACKEND_ACCESS_ENABLED=true mas BACKEND_ACCESS_KEY vazia no backend\.env"
-        } else {
-            Set-DotEnvValue $FeEnv 'VITE_BACKEND_ACCESS_KEY' ''
-        }
+    if ($enabled) {
+        Write-Warn "BACKEND_ACCESS_ENABLED=true: use cookie/header no browser; nao copie a chave para VITE_*."
     }
 }
-Write-Ok "VITE_API_URL=$apiUrl"
+Write-Ok "VITE_API_URL= (vazio — proxy Vite / mesma origem)"
+Write-Host "  Painel Vite:  http://${hostIp}:$FrontPort/" -ForegroundColor Gray
+Write-Host "  API direta:   $apiUrl" -ForegroundColor Gray
 
 if (-not $SkipFirewall) {
     Write-Step "Firewall (portas $ApiPort e $FrontPort)"

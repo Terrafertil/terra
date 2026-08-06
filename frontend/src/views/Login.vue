@@ -21,7 +21,12 @@ async function entrar() {
     if (auth.mustChangePassword) {
       router.push({ name: 'trocarSenha' })
     } else {
-      router.push(route.query.redirect || '/dashboard')
+      const raw = String(route.query.redirect || '/dashboard')
+      const seguro =
+        raw.startsWith('/') && !raw.startsWith('//') && !raw.includes('\\')
+          ? raw
+          : '/dashboard'
+      router.push(seguro)
     }
   } catch (e) {
     erro.value = e.response?.data?.detail || 'Falha no login'

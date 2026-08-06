@@ -109,8 +109,15 @@ def trocar_senha(
 
 @router.post("/logout", status_code=204)
 def logout(response: Response):
-    response.delete_cookie(settings.auth_cookie_name, path="/")
-    response.delete_cookie(settings.backend_access_cookie_name, path="/")
+    # Mesmos atributos do set_cookie — senão cookies Secure podem sobreviver.
+    for nome in (settings.auth_cookie_name, settings.backend_access_cookie_name):
+        response.delete_cookie(
+            key=nome,
+            path="/",
+            secure=settings.auth_cookie_secure,
+            httponly=True,
+            samesite="lax",
+        )
 
 
 @router.get("/me", response_model=schemas.UsuarioOut)

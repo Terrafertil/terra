@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 import time
 import uuid
 from functools import partial
@@ -16,13 +17,14 @@ from sqlalchemy.orm import Session, joinedload
 from starlette.concurrency import run_in_threadpool
 
 from ..config import settings
-from ..database import get_db
+from ..database import SessionLocal, get_db
 from .. import models, schemas
 from ..auth import require_user
 from ..services import envio_service, ocr_service, pdf_service, cliente_crypto, file_provenance
 from ..services.pdf_service import PdfRequerSenhaError, PdfSenhaInvalidaError
 from ..services.upload_service import save_upload
 
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/envios", tags=["envios"])
 
@@ -298,7 +300,11 @@ def obter(eid: int, db: Session = Depends(get_db), _=Depends(require_user)):
 
 
 def _resolver_cliente(
-    db: Session, cliente_id: int | None, cliente_novo_json: str | None
+    db: Session,
+    cliente_id: int | None,
+    cliente_novo_json: str | None,
+    *,
+    persistir: bool = True,
 ) -> models.Cliente:
     if cliente_id:
         cli = cliente_crypto.get_by_id(db, cliente_id)
@@ -311,6 +317,9 @@ def _resolver_cliente(
         except Exception as e:
             raise HTTPException(400, f"cliente_novo inválido: {e}")
         cli = models.Cliente(**dados.model_dump())
+        if not persistir:
+            # Demonstração: objeto efémero, sem commit na BD.
+            return cli
         db.add(cli)
         db.commit()
         db.refresh(cli)
@@ -378,26 +387,37 @@ async def _processar_request_manual(
             )
             if not numero_apolice and dados_pdf.numero_apolice:
                 numero_apolice = dados_pdf.numero_apolice
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("Falha ao extrair PDF no envio manual: %s", exc)
 
-    auto: models.Auto | None = None
+    auto_ok_id: int | None = None
     if auto_id:
         auto = db.get(models.Auto, auto_id)
-        if auto and auto.cliente_id != cliente.id:
-            auto = None
+        if auto and auto.cliente_id == cliente.id:
+            auto_ok_id = auto.id
 
-    try:
-        rotulo = file_provenance.rotulo_usuario(usuario.nome, usuario.username)
-        envio = await run_in_threadpool(
-            partial(
-                envio_service.processar_envio,
-                db,
-                cliente=cliente,
+    # Sessão SQLAlchemy não é thread-safe: processar_envio abre Session própria.
+    cliente_db_id = cliente.id
+    usuario_db_id = usuario.id if getattr(usuario, "id", None) not in (None, 0) else None
+    rotulo = file_provenance.rotulo_usuario(usuario.nome, usuario.username)
+
+    def _processar_em_thread() -> int:
+        db_thread = SessionLocal()
+        try:
+            cli = cliente_crypto.get_by_id(db_thread, cliente_db_id)
+            if not cli:
+                raise ValueError("Cliente informado não existe")
+            auto_obj = db_thread.get(models.Auto, auto_ok_id) if auto_ok_id else None
+            usuario_obj = (
+                db_thread.get(models.Usuario, usuario_db_id) if usuario_db_id else None
+            )
+            envio_thread = envio_service.processar_envio(
+                db_thread,
+                cliente=cli,
                 caminho_pdf=destino_up,
                 tipo_envio="MANUAL",
                 tipo_codigo=tipo_codigo,
-                auto=auto,
+                auto=auto_obj,
                 numero_apolice=numero_apolice,
                 assunto_customizado=assunto,
                 corpo_html_customizado=mensagem,
@@ -405,12 +425,17 @@ async def _processar_request_manual(
                 assinatura_id=assinatura_id,
                 nome_arquivo_original=nome_original,
                 pdf_senha=pdf_senha,
-                usuario_envio=usuario if usuario.id else None,
+                usuario_envio=usuario_obj,
                 arquivo_colocado_por=rotulo,
                 boleto_path=destino_boleto,
                 boleto_nome_original=boleto_nome_original,
             )
-        )
+            return int(envio_thread.id)
+        finally:
+            db_thread.close()
+
+    try:
+        envio_id = await run_in_threadpool(_processar_em_thread)
     except PdfRequerSenhaError as e:
         destino_up.unlink(missing_ok=True)
         if destino_boleto:
@@ -441,6 +466,14 @@ async def _processar_request_manual(
             except Exception:
                 origem.unlink(missing_ok=True)
 
+    envio = (
+        db.query(models.Envio)
+        .options(joinedload(models.Envio.cliente))
+        .filter(models.Envio.id == envio_id)
+        .first()
+    )
+    if not envio:
+        raise HTTPException(500, "Envio processado mas não encontrado no histórico")
     return envio
 
 
@@ -531,7 +564,7 @@ async def demonstrar_email(
     _=Depends(require_user),
 ):
     """Não envia: só renderiza assunto/corpo do e-mail com os dados informados."""
-    cliente = _resolver_cliente(db, cliente_id, cliente_novo)
+    cliente = _resolver_cliente(db, cliente_id, cliente_novo, persistir=False)
 
     if arquivo and arquivo.filename and extrair_dados:
         up = settings.data_path(settings.upload_folder)
@@ -550,8 +583,8 @@ async def demonstrar_email(
                 )
                 if not numero_apolice and d.numero_apolice:
                     numero_apolice = d.numero_apolice
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("Falha ao extrair PDF na demonstração: %s", exc)
         finally:
             try:
                 tmp.unlink()

@@ -10,6 +10,7 @@ Suporta:
 """
 from __future__ import annotations
 
+import logging
 import smtplib
 import ssl
 import mimetypes
@@ -19,9 +20,12 @@ from email.utils import make_msgid
 from pathlib import Path
 from typing import Iterable, Mapping, Any
 
-from jinja2 import Template
+from jinja2.sandbox import SandboxedEnvironment
 
 from ..config import settings
+
+log = logging.getLogger(__name__)
+_JINJA_ENV = SandboxedEnvironment(autoescape=False)
 
 
 TEMPLATE_PADRAO = """
@@ -199,7 +203,7 @@ def renderizar_template(
     for ph in PLACEHOLDERS_DISPONIVEIS:
         ctx.setdefault(ph["chave"], "")
 
-    return Template(tpl_str).render(**ctx)
+    return _JINJA_ENV.from_string(tpl_str).render(**ctx)
 
 
 def formatar_assunto(numero_apolice: str | None, custom: str | None = None) -> str:
@@ -321,6 +325,13 @@ def enviar_email(
                 smtp.login(settings.smtp_user, settings.smtp_password)
             smtp.send_message(msg)
 
+    log.info(
+        "E-mail aceite pelo SMTP %s → %s (message_id=%s, tracking=%s)",
+        settings.smtp_host,
+        destinatario,
+        message_id,
+        tracking_id or "-",
+    )
     return message_id
 
 

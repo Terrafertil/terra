@@ -107,6 +107,8 @@ def excluir_cliente_lgpd(
         for e in envios:
             if _apagar_ficheiro(e.caminho_backup):
                 ficheiros_removidos += 1
+            if _apagar_ficheiro(getattr(e, "caminho_backup_boleto", None)):
+                ficheiros_removidos += 1
 
     nome = c.nome
     n_envios = len(envios)
