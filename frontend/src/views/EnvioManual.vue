@@ -124,6 +124,26 @@ watch(clienteId, () => {
   autoId.value = null
 })
 
+function aplicarDadosDaAnalise(data) {
+  if (data.numero_apolice) {
+    numeroApolice.value = data.numero_apolice
+  }
+
+  if (data.cliente_sugerido_id) {
+    criarNovo.value = false
+    clienteId.value = data.cliente_sugerido_id
+    return
+  }
+
+  // CPF/CNPJ no PDF, mas cliente ainda não cadastrado → muda para cadastro.
+  if (data.cpf || data.cnpj) {
+    criarNovo.value = true
+    clienteId.value = null
+    if (data.cpf) novoCliente.cpf = data.cpf
+    if (data.cnpj) novoCliente.cnpj = data.cnpj
+  }
+}
+
 async function analisarArquivo() {
   if (!arquivo.value) {
     analise.value = null
@@ -140,10 +160,7 @@ async function analisarArquivo() {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
     analise.value = data
-    if (data.numero_apolice && !numeroApolice.value) numeroApolice.value = data.numero_apolice
-    if (data.cliente_sugerido_id && !criarNovo.value && !clienteId.value) {
-      clienteId.value = data.cliente_sugerido_id
-    }
+    aplicarDadosDaAnalise(data)
   } catch (e) {
     erro.value = e.response?.data?.detail || 'Não foi possível analisar o PDF'
   } finally {
@@ -189,6 +206,10 @@ function validar({ exigirArquivo }) {
   if (!criarNovo.value && !clienteId.value) { erro.value = 'Selecione ou crie um cliente'; return false }
   if (criarNovo.value && (!novoCliente.nome || !novoCliente.email)) {
     erro.value = 'Nome e e-mail do novo cliente são obrigatórios'; return false
+  }
+  if (!(numeroApolice.value || '').trim()) {
+    erro.value = 'Informe o número da apólice'
+    return false
   }
   return true
 }
@@ -346,8 +367,12 @@ onMounted(async () => {
             <input type="file" accept="application/pdf" @change="onBoleto" />
           </div>
           <div>
-            <label>Nº da apólice (opcional)</label>
-            <input v-model="numeroApolice" placeholder="Se vazio, tenta extrair do PDF" />
+            <label>Nº da apólice *</label>
+            <input
+              v-model="numeroApolice"
+              required
+              placeholder="Preenchido automaticamente quando o PDF permitir"
+            />
           </div>
           <div>
             <label>Tipo de envio</label>
@@ -395,15 +420,25 @@ onMounted(async () => {
           <h4 class="m-0 mb-2">Pré-visualização do PDF</h4>
           <p v-if="analisando" class="text-muted">A analisar layout e dados…</p>
           <div v-if="pdfPreviewUrl" class="pdf-preview-row">
-            <iframe :src="pdfPreviewUrl" class="pdf-iframe" title="Pré-visualização" />
+            <div class="pdf-preview-frame">
+              <iframe :src="pdfPreviewUrl" class="pdf-iframe" title="Pré-visualização do PDF" />
+              <p class="text-muted pdf-preview-fallback">
+                Se o PDF não aparecer aqui,
+                <a :href="pdfPreviewUrl" target="_blank" rel="noopener">abra em nova aba</a>.
+              </p>
+            </div>
             <div v-if="analise" class="pdf-analise-dados">
               <p><strong>Layout:</strong> {{ analise.layout }}</p>
               <p v-if="analise.seguradora"><strong>Seguradora:</strong> {{ analise.seguradora }}</p>
               <p v-if="analise.produto"><strong>Produto:</strong> {{ analise.produto }}</p>
               <p><strong>CPF:</strong> {{ analise.cpf || '—' }}</p>
+              <p><strong>CNPJ:</strong> {{ analise.cnpj || '—' }}</p>
               <p><strong>Apólice:</strong> {{ analise.numero_apolice || '—' }}</p>
               <p v-if="analise.cliente_sugerido_nome">
                 <strong>Cliente sugerido:</strong> {{ analise.cliente_sugerido_nome }}
+              </p>
+              <p v-else-if="analise.cpf || analise.cnpj" class="text-muted">
+                Cliente não encontrado — formulário mudou para <strong>Cadastrar novo</strong>.
               </p>
               <p v-if="analise.ocr_usado" class="badge enviado">OCR utilizado</p>
               <p v-if="analise.requer_senha" class="badge pendente">Senha necessária</p>
@@ -433,6 +468,10 @@ onMounted(async () => {
           {{ demonstrando ? 'Gerando...' : 'Demonstrar e-mail' }}
         </button>
       </div>
+      <p class="text-muted mt-2" style="font-size: 0.85rem">
+        <strong>Demonstrar e-mail</strong> só mostra a prévia na tela — não envia nada.
+        Para disparar de verdade, use <strong>Enviar agora</strong>.
+      </p>
     </form>
 
     <div v-if="mostrarConfirmacao" class="modal-backdrop" @click.self="fecharConfirmacao">
@@ -461,6 +500,9 @@ onMounted(async () => {
 
     <div v-if="demo" class="card mt-4">
       <h3>Demonstração do e-mail</h3>
+      <p class="text-muted" style="font-size: 0.9rem">
+        Esta é apenas uma prévia. Nenhum e-mail foi enviado.
+      </p>
       <p><strong>De:</strong> {{ demo.de }}</p>
       <p><strong>Para:</strong> {{ demo.para }}</p>
       <p><strong>Assunto:</strong> {{ demo.assunto }}</p>

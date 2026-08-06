@@ -319,7 +319,12 @@ async def _processar_request_manual(
     if extrair_dados:
         try:
             dados_pdf = await run_in_threadpool(
-                partial(pdf_service.extrair_dados, destino_up, senha=pdf_senha)
+                partial(
+                    pdf_service.extrair_dados,
+                    destino_up,
+                    usar_ocr=settings.ocr_enabled,
+                    senha=pdf_senha,
+                )
             )
             if not numero_apolice and dados_pdf.numero_apolice:
                 numero_apolice = dados_pdf.numero_apolice
@@ -486,7 +491,12 @@ async def demonstrar_email(
             await save_upload(arquivo, tmp, kind="pdf", allowed_suffixes={".pdf"})
             try:
                 d = await run_in_threadpool(
-                    partial(pdf_service.extrair_dados, tmp, senha=pdf_senha)
+                    partial(
+                        pdf_service.extrair_dados,
+                        tmp,
+                        usar_ocr=settings.ocr_enabled,
+                        senha=pdf_senha,
+                    )
                 )
                 if not numero_apolice and d.numero_apolice:
                     numero_apolice = d.numero_apolice

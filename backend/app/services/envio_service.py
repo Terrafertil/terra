@@ -10,7 +10,9 @@ Passos:
 from __future__ import annotations
 
 import logging
+import base64
 import hashlib
+import mimetypes
 import tempfile
 import uuid
 from datetime import datetime
@@ -167,6 +169,20 @@ def _montar_contexto(
     }
 
 
+def _assinatura_data_uri(path: Path) -> str | None:
+    """Converte a imagem da assinatura em data URI para pré-visualização no browser."""
+    if not path.is_file():
+        return None
+    ctype, _ = mimetypes.guess_type(path.name)
+    if not ctype or not ctype.startswith("image/"):
+        ctype = "image/png"
+    try:
+        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    except OSError:
+        return None
+    return f"data:{ctype};base64,{encoded}"
+
+
 def renderizar_demonstracao(
     db: Session,
     *,
@@ -187,6 +203,9 @@ def renderizar_demonstracao(
 
     assin = _resolver_assinatura(db, tipo_envio=tipo_envio, override_id=assinatura_id)
     cid = email_service.gerar_cid() if assin and assin.arquivo else None
+    assin_path: Path | None = None
+    if assin and assin.arquivo:
+        assin_path = settings.data_path(settings.assinaturas_folder) / assin.arquivo
 
     ctx = _montar_contexto(
         cliente=cliente,
@@ -204,6 +223,11 @@ def renderizar_demonstracao(
         template_html=(corpo.html if corpo and corpo.html else None),
         assinatura_cid=cid,
     )
+    # No browser, cid: não carrega; troca pela data URI só na demonstração.
+    if cid and assin_path:
+        data_uri = _assinatura_data_uri(assin_path)
+        if data_uri:
+            html = html.replace(f"cid:{cid}", data_uri)
     return {
         "de": f"{settings.smtp_from_name} <{settings.smtp_from_email}>",
         "para": cliente.email,

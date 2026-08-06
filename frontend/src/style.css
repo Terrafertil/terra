@@ -199,12 +199,23 @@ h1, h2, h3 { color: var(--tf-preto-musgo); margin: 0 0 .6rem 0; }
 @media (max-width: 768px) {
   .pdf-preview-row { grid-template-columns: 1fr; }
 }
+.pdf-preview-frame {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+}
 .pdf-iframe {
   width: 100%;
-  min-height: 320px;
+  min-height: 420px;
+  height: 55vh;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: #fff;
+}
+.pdf-preview-fallback {
+  margin: 0;
+  font-size: 0.85rem;
 }
 .pdf-analise-dados p { margin: 0.25rem 0; font-size: 0.9rem; }
 .analise-avisos { margin: 0.5rem 0 0 1rem; font-size: 0.85rem; color: var(--warn); }

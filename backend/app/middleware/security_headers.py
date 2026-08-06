@@ -18,7 +18,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "Content-Security-Policy",
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob:; connect-src 'self'; "
-            "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+            "frame-src 'self' blob:; object-src 'self' blob:; "
+            "base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
         )
         if request.url.path.startswith("/api/"):
             response.headers.setdefault("Cache-Control", "no-store")
