@@ -4,13 +4,14 @@ from __future__ import annotations
 import csv
 import io
 import json
+import time
 import uuid
 from functools import partial
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session, joinedload
 from starlette.concurrency import run_in_threadpool
 
@@ -24,6 +25,28 @@ from ..services.upload_service import save_upload
 
 
 router = APIRouter(prefix="/api/envios", tags=["envios"])
+
+# Pré-visualização same-origin (blob: costuma ser bloqueado pelo browser/CSP).
+_PREVIEW_TTL_S = 30 * 60
+_preview_pdfs: dict[str, tuple[Path, float]] = {}
+
+
+def _limpar_previews_expiradas() -> None:
+    agora = time.time()
+    vencidos = [k for k, (_, exp) in _preview_pdfs.items() if exp <= agora]
+    for k in vencidos:
+        path, _ = _preview_pdfs.pop(k)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _guardar_preview(path: Path) -> str:
+    _limpar_previews_expiradas()
+    token = uuid.uuid4().hex
+    _preview_pdfs[token] = (path, time.time() + _PREVIEW_TTL_S)
+    return token
 
 
 def _envio_out(envio: models.Envio) -> schemas.EnvioOut:
@@ -188,6 +211,7 @@ async def analisar_pdf(
     up = settings.data_path(settings.upload_folder)
     up.mkdir(parents=True, exist_ok=True)
     tmp = up / f"analise_{uuid.uuid4().hex}.pdf"
+    preview_token: str | None = None
     try:
         await save_upload(arquivo, tmp, kind="pdf", allowed_suffixes={".pdf"})
         dados = await run_in_threadpool(
@@ -198,6 +222,10 @@ async def analisar_pdf(
                 senha=pdf_senha,
             )
         )
+        # Mantém cópia para iframe same-origin (evita bloqueio de blob:).
+        preview_path = up / f"preview_{uuid.uuid4().hex}.pdf"
+        preview_path.write_bytes(tmp.read_bytes())
+        preview_token = _guardar_preview(preview_path)
     finally:
         try:
             tmp.unlink()
@@ -219,6 +247,8 @@ async def analisar_pdf(
         cpf=dados.cpf,
         cnpj=dados.cnpj,
         numero_apolice=dados.numero_apolice,
+        nome=dados.nome,
+        telefone=dados.telefone,
         layout=dados.layout,
         seguradora=dados.seguradora,
         produto=dados.produto,
@@ -231,6 +261,26 @@ async def analisar_pdf(
         cliente_sugerido_nome=cliente_nome,
         requer_senha=dados.requer_senha,
         senha_invalida=dados.senha_invalida,
+        preview_url=f"/api/envios/preview-pdf/{preview_token}" if preview_token else None,
+    )
+
+
+@router.get("/preview-pdf/{token}")
+def preview_pdf(token: str, _=Depends(require_user)):
+    """Serve o PDF analisado para o iframe de pré-visualização."""
+    _limpar_previews_expiradas()
+    item = _preview_pdfs.get(token)
+    if not item:
+        raise HTTPException(404, "Pré-visualização expirada ou inválida")
+    path, _exp = item
+    if not path.is_file():
+        _preview_pdfs.pop(token, None)
+        raise HTTPException(404, "Arquivo de pré-visualização não encontrado")
+    return FileResponse(
+        str(path),
+        media_type="application/pdf",
+        filename=path.name,
+        content_disposition_type="inline",
     )
 
 

@@ -128,6 +128,12 @@ function aplicarDadosDaAnalise(data) {
   if (data.numero_apolice) {
     numeroApolice.value = data.numero_apolice
   }
+  if (data.preview_url) {
+    if (pdfPreviewUrl.value && String(pdfPreviewUrl.value).startsWith('blob:')) {
+      URL.revokeObjectURL(pdfPreviewUrl.value)
+    }
+    pdfPreviewUrl.value = data.preview_url
+  }
 
   if (data.cliente_sugerido_id) {
     criarNovo.value = false
@@ -136,11 +142,13 @@ function aplicarDadosDaAnalise(data) {
   }
 
   // CPF/CNPJ no PDF, mas cliente ainda não cadastrado → muda para cadastro.
-  if (data.cpf || data.cnpj) {
+  if (data.cpf || data.cnpj || data.nome) {
     criarNovo.value = true
     clienteId.value = null
+    if (data.nome && !novoCliente.nome) novoCliente.nome = data.nome
     if (data.cpf) novoCliente.cpf = data.cpf
     if (data.cnpj) novoCliente.cnpj = data.cnpj
+    if (data.telefone && !novoCliente.telefone) novoCliente.telefone = data.telefone
   }
 }
 
@@ -169,10 +177,13 @@ async function analisarArquivo() {
 }
 
 function onArquivo(e) {
-  if (pdfPreviewUrl.value) URL.revokeObjectURL(pdfPreviewUrl.value)
+  if (pdfPreviewUrl.value && String(pdfPreviewUrl.value).startsWith('blob:')) {
+    URL.revokeObjectURL(pdfPreviewUrl.value)
+  }
   arquivo.value = e.target.files[0] || null
   pdfSenha.value = ''
   if (arquivo.value) {
+    // Preview temporário; após a análise troca pela URL same-origin da API.
     pdfPreviewUrl.value = URL.createObjectURL(arquivo.value)
     analisarArquivo()
   } else {
@@ -431,13 +442,15 @@ onMounted(async () => {
               <p><strong>Layout:</strong> {{ analise.layout }}</p>
               <p v-if="analise.seguradora"><strong>Seguradora:</strong> {{ analise.seguradora }}</p>
               <p v-if="analise.produto"><strong>Produto:</strong> {{ analise.produto }}</p>
+              <p><strong>Nome:</strong> {{ analise.nome || '—' }}</p>
               <p><strong>CPF:</strong> {{ analise.cpf || '—' }}</p>
               <p><strong>CNPJ:</strong> {{ analise.cnpj || '—' }}</p>
+              <p><strong>Telefone:</strong> {{ analise.telefone || '—' }}</p>
               <p><strong>Apólice:</strong> {{ analise.numero_apolice || '—' }}</p>
               <p v-if="analise.cliente_sugerido_nome">
                 <strong>Cliente sugerido:</strong> {{ analise.cliente_sugerido_nome }}
               </p>
-              <p v-else-if="analise.cpf || analise.cnpj" class="text-muted">
+              <p v-else-if="analise.cpf || analise.cnpj || analise.nome" class="text-muted">
                 Cliente não encontrado — formulário mudou para <strong>Cadastrar novo</strong>.
               </p>
               <p v-if="analise.ocr_usado" class="badge enviado">OCR utilizado</p>

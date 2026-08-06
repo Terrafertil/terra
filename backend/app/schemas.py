@@ -423,6 +423,8 @@ class PdfAnaliseOut(BaseModel):
     cpf: str | None = None
     cnpj: str | None = None
     numero_apolice: str | None = None
+    nome: str | None = None
+    telefone: str | None = None
     layout: str
     seguradora: str | None = None
     produto: str | None = None
@@ -435,6 +437,7 @@ class PdfAnaliseOut(BaseModel):
     cliente_sugerido_nome: str | None = None
     requer_senha: bool = False
     senha_invalida: bool = False
+    preview_url: str | None = None
 
 
 # ========= Capa =========
