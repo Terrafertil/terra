@@ -128,12 +128,8 @@ function aplicarDadosDaAnalise(data) {
   if (data.numero_apolice) {
     numeroApolice.value = data.numero_apolice
   }
-  if (data.preview_url) {
-    if (pdfPreviewUrl.value && String(pdfPreviewUrl.value).startsWith('blob:')) {
-      URL.revokeObjectURL(pdfPreviewUrl.value)
-    }
-    pdfPreviewUrl.value = data.preview_url
-  }
+  // Mantém preview em blob: (mesmo origin do ficheiro local). A URL da API
+  // só serve como fallback se o blob ainda não existir.
 
   if (data.cliente_sugerido_id) {
     criarNovo.value = false
