@@ -474,7 +474,9 @@ async def _processar_request_manual(
     )
     if not envio:
         raise HTTPException(500, "Envio processado mas não encontrado no histórico")
-    return envio
+    if envio.cliente:
+        cliente_crypto.decrypt_cliente_fields(envio.cliente)
+    return _envio_out(envio)
 
 
 @router.post("/manual", response_model=schemas.EnvioOut, status_code=201)
