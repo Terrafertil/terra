@@ -1,8 +1,11 @@
 # Aplicativo Windows Terra Fértil
 
-Cliente Windows que abre `http://192.168.0.130:5173/` em uma janela WebView2 própria.
+Cliente Windows que abre `http://192.168.0.130:8000/` em uma janela WebView2 própria.
 Ele inicia maximizado, com os controles nativos de minimizar, restaurar/maximizar e
 fechar, e usa o ícone da Terra Fértil na janela e no executável.
+
+Em produção, o backend também serve a interface compilada na porta `8000`. A porta
+`5173` é usada apenas pelo servidor Vite durante o desenvolvimento.
 
 ## Gerar
 

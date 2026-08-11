@@ -4,8 +4,8 @@
 
 .DESCRIPTION
     - Detecta o IPv4 da LAN deste servidor
-    - Atualiza frontend\.env (VITE_API_URL + chave do backend, se existir)
-    - Opcional: regras de firewall (8000 e 5173) e npm run build
+    - Atualiza frontend\.env para usar /api na mesma origem, sem embutir segredos
+    - Opcional: regra de firewall da API (e do Vite quando -Iniciar) e npm run build
     - Mostra os URLs para partilhar na rede
 
 .EXAMPLE
@@ -18,7 +18,9 @@ param(
     [string]$ServerIp = "",
     [string]$HostName = "",
     [switch]$UrlSemPorta,
+    [ValidateRange(1, 65535)]
     [int]$ApiPort = 8000,
+    [ValidateRange(1, 65535)]
     [int]$FrontPort = 5173,
     [switch]$SkipBuild,
     [switch]$SkipFirewall,
@@ -73,8 +75,19 @@ function Ensure-NodePath {
     foreach ($p in $paths) {
         if ($env:Path -notlike "*$p*") { $env:Path = "$p;$env:Path" }
     }
-    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
         throw "npm nao encontrado. Instale Node.js LTS ou use preparar-rede.bat a partir de um terminal com Node no PATH."
+    }
+}
+
+function Invoke-NativeChecked(
+    [string]$Command,
+    [string[]]$Arguments,
+    [string]$Description
+) {
+    & $Command @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Description falhou (codigo de saida $LASTEXITCODE)."
     }
 }
 
@@ -83,20 +96,22 @@ function Open-FirewallPorts {
         [Security.Principal.WindowsBuiltInRole]::Administrator
     )
     if (-not $isAdmin) {
-        Write-Warn "Firewall: execute como Administrador para abrir as portas $ApiPort e $FrontPort automaticamente."
+        Write-Warn "Firewall: execute como Administrador para abrir as portas necessárias automaticamente."
         return
     }
-    foreach ($pair in @(
-        @{ Name = 'TF-Envio-API'; Port = $ApiPort },
-        @{ Name = 'TF-Envio-Front'; Port = $FrontPort }
-    )) {
+    $ports = @(@{ Name = 'TF-Envio-API'; Port = $ApiPort })
+    if ($Iniciar) {
+        $ports += @{ Name = 'TF-Envio-Front-Dev'; Port = $FrontPort }
+    }
+    foreach ($pair in $ports) {
         $existing = Get-NetFirewallRule -DisplayName $pair.Name -ErrorAction SilentlyContinue
-        if (-not $existing) {
-            New-NetFirewallRule -DisplayName $pair.Name -Direction Inbound -Protocol TCP -LocalPort $pair.Port -Action Allow | Out-Null
-            Write-Ok "Firewall: porta $($pair.Port) ($($pair.Name))"
+        if ($existing) {
+            $existing | Set-NetFirewallRule -Enabled True -Direction Inbound -Action Allow -ErrorAction Stop | Out-Null
+            $existing | Get-NetFirewallPortFilter | Set-NetFirewallPortFilter -Protocol TCP -LocalPort $pair.Port -ErrorAction Stop | Out-Null
         } else {
-            Write-Ok "Firewall: regra $($pair.Name) ja existe"
+            New-NetFirewallRule -DisplayName $pair.Name -Direction Inbound -Protocol TCP -LocalPort $pair.Port -Action Allow -ErrorAction Stop | Out-Null
         }
+        Write-Ok "Firewall: porta $($pair.Port) validada ($($pair.Name))"
     }
 }
 
@@ -104,6 +119,10 @@ function Open-FirewallPorts {
 Write-Host ""
 Write-Host "  Preparar acesso na rede - Terra Fertil" -ForegroundColor White
 Write-Host ""
+
+if ($Iniciar -and $ApiPort -ne 8000) {
+    throw "-Iniciar usa o proxy do Vite fixo na API :8000. Use -ApiPort 8000 ou inicie apenas o backend na porta personalizada."
+}
 
 $hostIp = if ($ServerIp.Trim()) { $ServerIp.Trim() } else { Get-LocalLanIPv4 }
 $dnsName = $HostName.Trim().ToLower()
@@ -120,25 +139,28 @@ if ($hostIp -eq '127.0.0.1') {
 }
 
 Write-Step "Atualizar $FeEnv"
-# Vite em :5173 usa proxy /api → 127.0.0.1:8000. VITE_API_URL absoluto
+# Vite em :5173 usa proxy /api -> 127.0.0.1:8000. VITE_API_URL absoluto
 # quebra CSP (connect-src 'self') e cookies SameSite=Lax.
 Set-DotEnvValue $FeEnv 'VITE_API_URL' ''
 # Nunca gravar segredos com prefixo VITE_ (entram no bundle se importados).
 Set-DotEnvValue $FeEnv 'VITE_BACKEND_ACCESS_KEY' ''
 
 if (Test-Path $BeEnv) {
+    Set-DotEnvValue $BeEnv 'APP_HOST' '0.0.0.0'
+    Set-DotEnvValue $BeEnv 'APP_PORT' $ApiPort
+    Set-DotEnvValue $BeEnv 'CORS_ORIGINS' $apiUrl
     $enabled = (Get-Content $BeEnv -Encoding UTF8 | Where-Object { $_ -match '^\s*BACKEND_ACCESS_ENABLED\s*=\s*true' })
     if ($enabled) {
         Write-Warn "BACKEND_ACCESS_ENABLED=true: use cookie/header no browser; nao copie a chave para VITE_*."
     }
 }
-Write-Ok "VITE_API_URL= (vazio — proxy Vite / mesma origem)"
-Write-Host "  Painel Vite:  http://${hostIp}:$FrontPort/" -ForegroundColor Gray
-Write-Host "  API direta:   $apiUrl" -ForegroundColor Gray
+Write-Ok "VITE_API_URL= (vazio - proxy Vite / mesma origem)"
+Write-Host "  Sistema:      $apiUrl" -ForegroundColor Gray
+if ($Iniciar) { Write-Host "  Vite (dev):   http://${hostIp}:$FrontPort/" -ForegroundColor Gray }
 
 if (-not $SkipFirewall) {
-    Write-Step "Firewall (portas $ApiPort e $FrontPort)"
-    try { Open-FirewallPorts } catch { Write-Warn "Firewall: $_" }
+    Write-Step "Firewall"
+    Open-FirewallPorts
 }
 
 if (-not $SkipBuild) {
@@ -147,19 +169,26 @@ if (-not $SkipBuild) {
     Push-Location $FrontDir
     try {
         if (-not (Test-Path 'node_modules')) {
-            npm install
+            if (Test-Path 'package-lock.json') {
+                Invoke-NativeChecked -Command 'npm.cmd' -Arguments @('ci') -Description 'Instalacao das dependencias do frontend'
+            } else {
+                Invoke-NativeChecked -Command 'npm.cmd' -Arguments @('install') -Description 'Instalacao das dependencias do frontend'
+            }
         }
-        npm run build
+        Invoke-NativeChecked -Command 'npm.cmd' -Arguments @('run', 'build') -Description 'Build do frontend'
+        if (-not (Test-Path (Join-Path $FrontDir 'dist\index.html'))) {
+            throw 'Build do frontend nao gerou dist\index.html.'
+        }
         Write-Ok "Build concluido"
     } finally { Pop-Location }
 }
 
 if ($dnsName) {
-    $urlFront = if ($UrlSemPorta) { "http://${dnsName}" } else { "http://${dnsName}:$FrontPort" }
-    $urlApi   = if ($UrlSemPorta) { "http://${dnsName}/docs" } else { "http://${dnsName}:$ApiPort/docs" }
+    $urlFront = if ($UrlSemPorta) { "http://${dnsName}" } else { "http://${dnsName}:$ApiPort" }
+    $urlApi   = if ($UrlSemPorta) { "http://${dnsName}/api/health" } else { "http://${dnsName}:$ApiPort/api/health" }
 } else {
-    $urlFront = "http://${hostIp}:$FrontPort"
-    $urlApi   = "http://${hostIp}:$ApiPort/docs"
+    $urlFront = "http://${hostIp}:$ApiPort"
+    $urlApi   = "http://${hostIp}:$ApiPort/api/health"
 }
 
 Write-Host ""
@@ -167,11 +196,11 @@ Write-Host "========================================================" -Foregroun
 Write-Ok  "Pronto. Outros PCs na rede so precisam do browser:"
 Write-Host ""
 Write-Host "  Sistema (interface):  $urlFront" -ForegroundColor White
-Write-Host "  API (teste):          $urlApi" -ForegroundColor Gray
+Write-Host "  Saude da API:         $urlApi" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  Neste servidor:" -ForegroundColor Yellow
-Write-Host "    1. Backend a correr (iniciar-backend.bat ou servico :$ApiPort)"
-Write-Host "    2. Frontend: iniciar-frontend.bat  OU  npm run preview"
+Write-Host "    Backend a correr (iniciar-backend.bat ou servico :$ApiPort)"
+if ($Iniciar) { Write-Host "    Vite de desenvolvimento iniciado separadamente em :$FrontPort" }
 Write-Host ""
 Write-Host "  Nao use localhost nos outros PCs - use o IP acima." -ForegroundColor Yellow
 Write-Host "========================================================" -ForegroundColor Green
@@ -181,7 +210,9 @@ if ($Iniciar) {
     Write-Step "A iniciar frontend (npm run dev)..."
     Ensure-NodePath
     Push-Location $FrontDir
-    try { npm run dev } finally { Pop-Location }
+    try {
+        Invoke-NativeChecked -Command 'npm.cmd' -Arguments @('run', 'dev', '--', '--port', [string]$FrontPort) -Description 'Servidor Vite'
+    } finally { Pop-Location }
 }
 
 if (-not $SemPausa -and -not $Iniciar) {

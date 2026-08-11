@@ -59,6 +59,10 @@ Configure no mínimo:
 - `CORS_ORIGINS`, com a URL real do painel;
 - `AUTH_COOKIE_SECURE=true` assim que o endereço estiver sob HTTPS.
 
+Em atualizações, o instalador preserva o `.env`, mas gera automaticamente um novo
+`BREVO_WEBHOOK_TOKEN` quando ele estiver ausente ou tiver menos de 32 caracteres. Nesse
+caso, copie o novo valor do `.env` para a autenticação Bearer no painel Brevo.
+
 Depois:
 
 ```powershell
@@ -83,7 +87,11 @@ Logs:
 ```text
 C:\envio-sistema\backend\logs\api.out.log
 C:\envio-sistema\backend\logs\api.err.log
+C:\envio-sistema\backend\logs\api.log       (rotativo, 5 arquivos de 5 MB)
 ```
+
+`api.log` também é criado quando o backend é iniciado fora do NSSM e registra avisos
+de configuração SMTP/webhook e o processamento dos eventos de entrega.
 
 Swagger fica desativado por padrão. Para diagnóstico em ambiente restrito, defina
 `DOCS_ENABLED=true`, reinicie o serviço e use `/docs`; desative novamente depois.
@@ -112,6 +120,9 @@ Authorization: Bearer <BREVO_WEBHOOK_TOKEN>
 ```
 
 Selecione os eventos de entrega, abertura, clique, soft/hard bounce, bloqueio e erro.
+O estado `accepted` confirma somente aceite pelo SMTP. A entrega final aparece como
+`delivered`; falhas de entrega ficam visíveis e podem ser reenviadas depois da correção
+do destinatário.
 O histórico correlaciona os eventos pelo identificador da mensagem e pelo campo de
 rastreamento enviado pelo sistema.
 
@@ -139,7 +150,7 @@ Pare a API antes de executar:
 ```powershell
 Stop-Service EnvioApolices-API
 cd C:\envio-sistema\backend
-.\.venv\Scripts\python scripts\rotate_encryption_key.py --confirm-api-offline
+.\.venv\Scripts\python scripts\rotate_encryption_key.py --confirm-offline
 Start-Service EnvioApolices-API
 ```
 

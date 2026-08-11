@@ -32,6 +32,7 @@ backend/uploads/
 backend/processados/
 backend/entrada/
 backend/logs/
+backend/assinaturas/
 
 # Editor
 .vscode/

@@ -71,6 +71,7 @@ class IdempotencyTests(unittest.TestCase):
             "arquivo_sha256": "a" * 64,
             "boleto_sha256": "b" * 64,
             "cliente_id": 10,
+            "destinatario_email": "Cliente@Example.com ",
             "tipo_envio": "MANUAL",
             "tipo_codigo": "auto",
         }
@@ -79,6 +80,45 @@ class IdempotencyTests(unittest.TestCase):
             _chave_idempotencia(**args),
             _chave_idempotencia(**{**args, "cliente_id": 11}),
         )
+
+    def test_email_e_normalizado_na_chave(self):
+        args = {
+            "arquivo_sha256": "a" * 64,
+            "boleto_sha256": "",
+            "cliente_id": 10,
+            "destinatario_email": "Cliente@Example.com ",
+            "tipo_envio": "FULL",
+            "tipo_codigo": "auto",
+        }
+        self.assertEqual(
+            _chave_idempotencia(**args),
+            _chave_idempotencia(
+                **{**args, "destinatario_email": "  cliente@example.COM"}
+            ),
+        )
+        self.assertNotEqual(
+            _chave_idempotencia(**args),
+            _chave_idempotencia(
+                **{**args, "destinatario_email": "outro@example.com"}
+            ),
+        )
+
+    def test_chave_usa_hmac_com_segredo_da_aplicacao(self):
+        args = {
+            "arquivo_sha256": "a" * 64,
+            "boleto_sha256": "",
+            "cliente_id": 10,
+            "destinatario_email": "cliente@example.com",
+            "tipo_envio": "FULL",
+            "tipo_codigo": "auto",
+        }
+        with patch.object(settings, "secret_key", "segredo-a-com-32-caracteres-minimo"):
+            chave_a = _chave_idempotencia(**args)
+        with patch.object(settings, "secret_key", "segredo-b-com-32-caracteres-minimo"):
+            chave_b = _chave_idempotencia(**args)
+
+        self.assertNotEqual(chave_a, chave_b)
+        self.assertEqual(len(chave_a), 64)
 
 
 if __name__ == "__main__":

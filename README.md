@@ -36,9 +36,10 @@ O watcher varre `backend/entrada/`, identifica o tipo, extrai CPF/CNPJ e número
 apólice, localiza o cliente, envia a mensagem e move o PDF para `processados/`.
 Trabalho pesado de PDF/OCR/SMTP é executado fora do loop assíncrono da API.
 
-O envio é idempotente: o mesmo arquivo/contexto não é reenviado acidentalmente. Um
-registro que ficou pendente após interrupção é marcado como incerto para revisão, em
-vez de disparar uma duplicata automática.
+O watcher FULL é idempotente: o mesmo arquivo, destinatário e contexto não é reenviado
+acidentalmente. Um clique em **Enviar agora**, por outro lado, representa intenção
+explícita e sempre cria uma nova tentativa. O histórico guarda o e-mail efetivamente
+usado em cada tentativa, mesmo que o cadastro do cliente seja alterado depois.
 
 ## Brevo
 
@@ -70,10 +71,11 @@ BREVO_MAX_MESSAGE_MB=20
 BREVO_WEBHOOK_TOKEN=gere-um-token-aleatorio-longo
 ```
 
-O backend mede a mensagem MIME completa antes do envio e registra o identificador do
-provedor. O webhook atualiza o histórico com aceito, entregue, abertura, clique,
-bounce, bloqueio ou erro. Remova variáveis antigas `USE_AWS_SES`, `AWS_SES_REGION` e
-credenciais SES de instalações migradas.
+O backend mede a mensagem MIME completa antes do envio. `accepted` significa apenas
+que o relay SMTP aceitou a mensagem; somente `delivered`, recebido pelo webhook,
+confirma a entrega. Bounce, bloqueio e e-mail inválido tornam o registro reenviável no
+histórico. Remova variáveis antigas `USE_AWS_SES`, `AWS_SES_REGION` e credenciais SES
+de instalações migradas.
 
 ## Segurança
 
@@ -88,7 +90,9 @@ DOCS_ENABLED=false
 ```
 
 O instalador gera `SECRET_KEY`, `BACKEND_ACCESS_KEY`, `DATA_ENCRYPTION_PASSWORD`,
-`BREVO_WEBHOOK_TOKEN` e senhas iniciais aleatórias em uma instalação nova. Arquivos
+`BREVO_WEBHOOK_TOKEN` e senhas iniciais aleatórias em uma instalação nova. Em uma
+atualização, ele também repara um `BREVO_WEBHOOK_TOKEN` ausente ou curto sem alterar
+os demais segredos. Arquivos
 `.env`, banco, salt criptográfico, PDFs, backups e logs nunca são copiados do repositório
 durante uma atualização.
 
@@ -123,7 +127,7 @@ Para rotacionar a chave de criptografia, pare o serviço e execute:
 
 ```powershell
 cd C:\envio-sistema\backend
-.\.venv\Scripts\python scripts\rotate_encryption_key.py --confirm-api-offline
+.\.venv\Scripts\python scripts\rotate_encryption_key.py --confirm-offline
 ```
 
 O utilitário cria cópias de segurança do banco, `.env` e salt antes de recifrar. A

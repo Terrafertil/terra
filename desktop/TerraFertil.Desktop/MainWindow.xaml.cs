@@ -21,7 +21,7 @@ public partial class MainWindow : Window
 
     private static Uri LoadServerUri()
     {
-        const string defaultUrl = "http://192.168.0.130:5173/";
+        const string defaultUrl = "http://192.168.0.130:8000/";
         var configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
         try
         {
@@ -111,7 +111,7 @@ public partial class MainWindow : Window
 
     private static string FriendlyError(Exception ex) => ex switch
     {
-        HttpRequestException => "Verifique se o frontend está iniciado no servidor e se a porta 5173 está liberada no firewall.",
+        HttpRequestException => "Verifique se o sistema está iniciado no servidor e se a porta 8000 está liberada no firewall.",
         TaskCanceledException => "O servidor demorou demais para responder.",
         _ => "Verifique a conexão de rede e tente novamente."
     };

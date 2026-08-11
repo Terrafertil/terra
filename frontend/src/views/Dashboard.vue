@@ -6,6 +6,11 @@ import { useAuthStore } from '../stores/auth'
 import NotificacoesPainel from '../components/NotificacoesPainel.vue'
 import SocPainel from '../components/SocPainel.vue'
 import DiretorPainel from '../components/DiretorPainel.vue'
+import {
+  classeDeliveryStatus,
+  rotuloDeliveryStatus,
+  rotuloStatusEnvio,
+} from '../utils/envioFeedback'
 
 const ui = useUiStore()
 const auth = useAuthStore()
@@ -129,6 +134,14 @@ onUnmounted(() => {
 
     <div v-if="erro" class="alert alert-err">{{ erro }}</div>
 
+    <div v-if="status?.email_configured === false" class="alert alert-err">
+      O envio de e-mails está indisponível: as credenciais SMTP não estão configuradas no servidor.
+    </div>
+    <div v-if="status?.webhook_configured === false" class="alert alert-warn">
+      A confirmação de entrega está indisponível. O SMTP ainda pode aceitar envios, mas sem o webhook
+      da Brevo o sistema não consegue confirmar entrega, bloqueio ou rejeição do destinatário.
+    </div>
+
     <DiretorPainel v-if="auth.isDiretor" />
     <SocPainel
       v-if="status"
@@ -210,7 +223,7 @@ onUnmounted(() => {
         <thead>
           <tr>
             <th>#</th><th>Tipo</th><th>Arquivo</th><th>Apólice</th>
-            <th>Status</th><th>Quando</th>
+            <th>Envio SMTP</th><th>Entrega</th><th>Quando</th>
           </tr>
         </thead>
         <tbody>
@@ -219,7 +232,12 @@ onUnmounted(() => {
             <td><span class="badge" :class="e.tipo_envio">{{ e.tipo_envio }}</span></td>
             <td>{{ e.nome_arquivo_original || e.nome_arquivo_final || '—' }}</td>
             <td>{{ e.numero_apolice || '—' }}</td>
-            <td><span class="badge" :class="e.status">{{ e.status }}</span></td>
+            <td><span class="badge" :class="e.status">{{ rotuloStatusEnvio(e.status) }}</span></td>
+            <td>
+              <span class="badge" :class="classeDeliveryStatus(e.delivery_status)">
+                {{ rotuloDeliveryStatus(e.delivery_status) }}
+              </span>
+            </td>
             <td>{{ new Date(e.criado_em).toLocaleString() }}</td>
           </tr>
         </tbody>

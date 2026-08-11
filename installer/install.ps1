@@ -23,7 +23,8 @@
 [CmdletBinding()]
 param(
     [string]$InstallDir = "C:\envio-sistema",
-    [string]$ServicePort = "8000",
+    [ValidateRange(1, 65535)]
+    [int]$ServicePort = 8000,
     [string]$FrontPort = "5173", # legado: mantido para compatibilidade, nao e aberto
     # IP ou hostname que os outros PCs usam para chegar à API (ex.: 192.168.1.10).
     # Se vazio, detecta automaticamente o IPv4 da LAN antes do build do frontend.
@@ -36,7 +37,10 @@ $ErrorActionPreference = "Stop"
 $script:BackendEnvCreated = $false
 $script:GeneratedAdminPassword = $null
 $script:GeneratedDiretorPassword = $null
+$script:WebhookTokenGenerated = $false
 $script:RollbackAvailable = $false
+$script:ServiceCreated = $false
+$script:ConfigSnapshots = @{}
 
 function Write-Step($msg)  { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)    { Write-Host "[OK] $msg"    -ForegroundColor Green }
@@ -54,6 +58,17 @@ function Assert-Admin {
 
 function Test-Cmd($name) {
     return [bool](Get-Command $name -ErrorAction SilentlyContinue)
+}
+
+function Invoke-NativeChecked(
+    [string]$FilePath,
+    [string[]]$Arguments,
+    [string]$Operation
+) {
+    & $FilePath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Operation falhou (codigo de saida $LASTEXITCODE)."
+    }
 }
 
 function Assert-Authenticode([string]$path, [string]$label) {
@@ -88,13 +103,19 @@ function Install-Python {
     }
     Write-Step "Python não encontrado, instalando..."
     if (Test-Cmd winget) {
-        winget install -e --id Python.Python.3.11 --accept-package-agreements --accept-source-agreements
+        Invoke-NativeChecked 'winget' @(
+            'install', '-e', '--id', 'Python.Python.3.11',
+            '--accept-package-agreements', '--accept-source-agreements'
+        ) 'Instalacao do Python pelo winget'
     } else {
         $url = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
         $out = "$env:TEMP\python-installer.exe"
         Invoke-WebRequest -Uri $url -OutFile $out
         Assert-Authenticode $out 'Python'
-        Start-Process -FilePath $out -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 Include_pip=1" -Wait
+        $process = Start-Process -FilePath $out -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 Include_pip=1" -Wait -PassThru
+        if ($process.ExitCode -ne 0) {
+            throw "Instalador do Python falhou (codigo $($process.ExitCode))."
+        }
     }
     python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)"
     if ($LASTEXITCODE -ne 0) { throw 'Python 3.11+ não ficou disponível no PATH.' }
@@ -113,13 +134,19 @@ function Install-Node {
     }
     Write-Step "Node.js não encontrado, instalando..."
     if (Test-Cmd winget) {
-        winget install -e --id OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
+        Invoke-NativeChecked 'winget' @(
+            'install', '-e', '--id', 'OpenJS.NodeJS.LTS',
+            '--accept-package-agreements', '--accept-source-agreements'
+        ) 'Instalacao do Node.js pelo winget'
     } else {
         $url = "https://nodejs.org/dist/v20.18.0/node-v20.18.0-x64.msi"
         $out = "$env:TEMP\node-installer.msi"
         Invoke-WebRequest -Uri $url -OutFile $out
         Assert-Authenticode $out 'Node.js'
-        Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$out`" /qn /norestart" -Wait
+        $process = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$out`" /qn /norestart" -Wait -PassThru
+        if ($process.ExitCode -notin @(0, 3010)) {
+            throw "Instalador do Node.js falhou (codigo $($process.ExitCode))."
+        }
     }
     node -e "process.exit(Number(process.versions.node.split('.')[0]) >= 20 ? 0 : 1)"
     if ($LASTEXITCODE -ne 0) { throw 'Node.js 20+ não ficou disponível no PATH.' }
@@ -225,25 +252,58 @@ function Deploy-Sources {
     }
 }
 
+function Backup-ConfigFiles {
+    foreach ($relative in @('backend\.env', 'frontend\.env')) {
+        $path = Join-Path $InstallDir $relative
+        $exists = Test-Path -LiteralPath $path -PathType Leaf
+        $script:ConfigSnapshots[$path] = @{
+            Existed = $exists
+            Bytes = if ($exists) { [IO.File]::ReadAllBytes($path) } else { $null }
+        }
+    }
+}
+
+function Restore-ConfigFiles {
+    foreach ($path in $script:ConfigSnapshots.Keys) {
+        $snapshot = $script:ConfigSnapshots[$path]
+        if ($snapshot.Existed) {
+            $parent = Split-Path $path -Parent
+            New-Item -ItemType Directory -Path $parent -Force | Out-Null
+            [IO.File]::WriteAllBytes($path, [byte[]]$snapshot.Bytes)
+        } elseif (Test-Path -LiteralPath $path -PathType Leaf) {
+            Remove-Item -LiteralPath $path -Force
+        }
+    }
+    Write-Warn 'Configuracoes .env restauradas apos falha'
+}
+
 function Backup-CurrentCode {
+    Backup-ConfigFiles
     $rollback = Join-Path $InstallDir '.rollback-code'
     if (Test-Path $rollback) { Remove-Item -LiteralPath $rollback -Recurse -Force }
     $backend = Join-Path $InstallDir 'backend'
     if (-not (Test-Path (Join-Path $backend 'app'))) { return }
 
     New-Item -ItemType Directory -Path (Join-Path $rollback 'backend') -Force | Out-Null
-    foreach ($dir in @('app', 'alembic')) {
+    foreach ($dir in @('app', 'alembic', 'scripts')) {
         $source = Join-Path $backend $dir
         if (Test-Path $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $rollback 'backend') -Recurse -Force }
     }
-    foreach ($file in @('requirements.txt', 'requirements.lock', 'run.py', 'alembic.ini')) {
+    foreach ($file in @('requirements.txt', 'requirements.lock', 'run.py', 'alembic.ini', '.env.example')) {
         $source = Join-Path $backend $file
         if (Test-Path $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $rollback 'backend') -Force }
     }
-    $frontDist = Join-Path $InstallDir 'frontend\dist'
-    if (Test-Path $frontDist) {
+    $frontend = Join-Path $InstallDir 'frontend'
+    if (Test-Path $frontend) {
         New-Item -ItemType Directory -Path (Join-Path $rollback 'frontend') -Force | Out-Null
-        Copy-Item -LiteralPath $frontDist -Destination (Join-Path $rollback 'frontend') -Recurse -Force
+        foreach ($dir in @('src', 'public', 'dist')) {
+            $source = Join-Path $frontend $dir
+            if (Test-Path $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $rollback 'frontend') -Recurse -Force }
+        }
+        foreach ($file in @('package.json', 'package-lock.json', 'vite.config.js', 'index.html', '.env.example')) {
+            $source = Join-Path $frontend $file
+            if (Test-Path $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $rollback 'frontend') -Force }
+        }
     }
     $script:RollbackAvailable = $true
     Write-Ok 'Versão anterior preservada para rollback'
@@ -252,21 +312,29 @@ function Backup-CurrentCode {
 function Restore-CurrentCode {
     if (-not $script:RollbackAvailable) { return }
     $rollback = Join-Path $InstallDir '.rollback-code'
-    foreach ($dir in @('app', 'alembic')) {
+    foreach ($dir in @('app', 'alembic', 'scripts')) {
         $target = Join-Path $InstallDir "backend\$dir"
         $source = Join-Path $rollback "backend\$dir"
         if (Test-Path $target) { Remove-Item -LiteralPath $target -Recurse -Force }
         if (Test-Path $source) { Copy-Item -LiteralPath $source -Destination (Split-Path $target -Parent) -Recurse -Force }
     }
-    foreach ($file in @('requirements.txt', 'requirements.lock', 'run.py', 'alembic.ini')) {
+    foreach ($file in @('requirements.txt', 'requirements.lock', 'run.py', 'alembic.ini', '.env.example')) {
         $source = Join-Path $rollback "backend\$file"
         if (Test-Path $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $InstallDir 'backend') -Force }
     }
-    $frontSource = Join-Path $rollback 'frontend\dist'
-    $frontTarget = Join-Path $InstallDir 'frontend\dist'
-    if (Test-Path $frontTarget) { Remove-Item -LiteralPath $frontTarget -Recurse -Force }
-    if (Test-Path $frontSource) {
-        Copy-Item -LiteralPath $frontSource -Destination (Split-Path $frontTarget -Parent) -Recurse -Force
+    foreach ($dir in @('src', 'public', 'dist')) {
+        $frontSource = Join-Path $rollback "frontend\$dir"
+        $frontTarget = Join-Path $InstallDir "frontend\$dir"
+        if (Test-Path $frontTarget) { Remove-Item -LiteralPath $frontTarget -Recurse -Force }
+        if (Test-Path $frontSource) {
+            Copy-Item -LiteralPath $frontSource -Destination (Split-Path $frontTarget -Parent) -Recurse -Force
+        }
+    }
+    foreach ($file in @('package.json', 'package-lock.json', 'vite.config.js', 'index.html', '.env.example')) {
+        $frontSource = Join-Path $rollback "frontend\$file"
+        if (Test-Path $frontSource) {
+            Copy-Item -LiteralPath $frontSource -Destination (Join-Path $InstallDir 'frontend') -Force
+        }
     }
     Write-Warn 'Rollback de código restaurado após falha'
 }
@@ -276,20 +344,24 @@ function Setup-BackendEnv {
     Push-Location $backend
     try {
         Write-Step "Criando virtualenv Python"
-        python -m venv .venv
+        Invoke-NativeChecked 'python' @('-m', 'venv', '.venv') 'Criacao do virtualenv'
         $pip = Join-Path $backend ".venv\Scripts\pip.exe"
         $py  = Join-Path $backend ".venv\Scripts\python.exe"
 
         Write-Step "Atualizando pip"
-        & $py -m pip install --upgrade pip
+        Invoke-NativeChecked $py @('-m', 'pip', 'install', '--upgrade', 'pip') 'Atualizacao do pip'
 
         Write-Step "Instalando dependências Python"
         $lock = Join-Path $backend 'requirements.lock'
         if (Test-Path $lock) {
-            & $pip install --require-hashes -r $lock
+            Invoke-NativeChecked $pip @('install', '--require-hashes', '-r', $lock) 'Instalacao das dependencias Python travadas'
+            $lockHash = (Get-FileHash -LiteralPath $lock -Algorithm SHA256).Hash.ToLowerInvariant()
+            Set-Content -LiteralPath (Join-Path $backend '.venv\.requirements-lock.sha256') -Value $lockHash -Encoding ASCII
         } else {
-            & $pip install -r requirements.txt
+            Invoke-NativeChecked $pip @('install', '-r', 'requirements.txt') 'Instalacao das dependencias Python'
         }
+
+        Invoke-NativeChecked $py @('-m', 'pip', 'check') 'Validacao das dependencias Python'
 
         Write-Ok "Backend preparado"
     } finally { Pop-Location }
@@ -325,6 +397,15 @@ function Set-DotEnvValue([string]$path, [string]$key, [string]$value) {
     $out | Set-Content -Path $path -Encoding UTF8
 }
 
+function Get-DotEnvValue([string]$path, [string]$key) {
+    if (-not (Test-Path $path)) { return $null }
+    $pattern = "^\s*$([regex]::Escape($key))\s*=\s*(.*)$"
+    foreach ($line in Get-Content $path -Encoding UTF8) {
+        if ($line -match $pattern) { return $matches[1].Trim() }
+    }
+    return $null
+}
+
 function Remove-DotEnvKey([string]$path, [string]$key) {
     if (-not (Test-Path $path)) { return }
     $pattern = "^\s*$([regex]::Escape($key))\s*="
@@ -344,12 +425,18 @@ function New-RandomHex([int]$bytes = 32) {
 }
 
 function Initialize-FreshBackendEnv {
+    $beEnv = Join-Path $InstallDir "backend\.env"
     if (-not $script:BackendEnvCreated) {
         Write-Ok "backend\.env existente preservado (segredos não foram alterados)"
+        $webhookToken = Get-DotEnvValue $beEnv 'BREVO_WEBHOOK_TOKEN'
+        if ([string]::IsNullOrWhiteSpace($webhookToken) -or $webhookToken.Length -lt 32) {
+            Set-DotEnvValue $beEnv 'BREVO_WEBHOOK_TOKEN' (New-RandomHex 32)
+            $script:WebhookTokenGenerated = $true
+            Write-Warn "BREVO_WEBHOOK_TOKEN ausente/inválido: um novo token foi gravado no .env"
+        }
         return
     }
 
-    $beEnv = Join-Path $InstallDir "backend\.env"
     $script:GeneratedAdminPassword = New-RandomHex 12
     $script:GeneratedDiretorPassword = New-RandomHex 16
 
@@ -357,29 +444,43 @@ function Initialize-FreshBackendEnv {
     Set-DotEnvValue $beEnv 'DATA_ENCRYPTION_PASSWORD' (New-RandomHex 32)
     Set-DotEnvValue $beEnv 'SECRET_KEY' (New-RandomHex 32)
     Set-DotEnvValue $beEnv 'BREVO_WEBHOOK_TOKEN' (New-RandomHex 32)
+    $script:WebhookTokenGenerated = $true
     Set-DotEnvValue $beEnv 'ADMIN_PASSWORD' $script:GeneratedAdminPassword
     Set-DotEnvValue $beEnv 'DIRETOR_PASSWORD' $script:GeneratedDiretorPassword
     Write-Ok "Chaves e senhas iniciais seguras geradas para a nova instalação"
 }
 
-function Configure-FrontendEnv {
-    if ($SkipFrontend) { return }
-
+function Configure-BackendEnv {
     $apiHost = if ($ServerIp) { $ServerIp.Trim() } else { Get-LocalLanIPv4 }
-    $feEnv   = Join-Path $InstallDir "frontend\.env"
     $beEnv   = Join-Path $InstallDir "backend\.env"
 
-    Write-Step "Frontend e API serão servidos na mesma origem"
-    Set-DotEnvValue $feEnv 'VITE_API_URL' ''
-    Remove-DotEnvKey $feEnv 'VITE_BACKEND_ACCESS_KEY'
-
     if (Test-Path $beEnv) {
+        Set-DotEnvValue $beEnv 'APP_PORT' $ServicePort
         Set-DotEnvValue $beEnv 'CORS_ORIGINS' "http://${apiHost}:$ServicePort"
+        if ($apiHost -ne '127.0.0.1' -and $apiHost -ne 'localhost') {
+            # O instalador detecta/recebe um endereco de LAN e abre a porta do
+            # servico; o Uvicorn precisa escutar fora do loopback tambem.
+            Set-DotEnvValue $beEnv 'APP_HOST' '0.0.0.0'
+        } else {
+            $appHost = Get-DotEnvValue $beEnv 'APP_HOST'
+            if ($appHost -in @('127.0.0.1', 'localhost')) {
+                Write-Warn "APP_HOST=$appHost aceita somente acesso local."
+            }
+        }
     }
 
     if ($apiHost -eq '127.0.0.1') {
         Write-Warn "Não foi possível detectar IP da LAN. Passe -ServerIp 192.168.x.x e rode installer\rebuild-frontend.ps1"
     }
+}
+
+function Configure-FrontendEnv {
+    if ($SkipFrontend) { return }
+    $feEnv = Join-Path $InstallDir "frontend\.env"
+
+    Write-Step "Frontend e API serão servidos na mesma origem"
+    Set-DotEnvValue $feEnv 'VITE_API_URL' ''
+    Remove-DotEnvKey $feEnv 'VITE_BACKEND_ACCESS_KEY'
 }
 
 function Build-Frontend {
@@ -389,9 +490,12 @@ function Build-Frontend {
     Push-Location $front
     try {
         Write-Step "Instalando dependências do frontend"
-        & npm ci
+        Invoke-NativeChecked 'npm' @('ci') 'npm ci'
         Write-Step "Compilando frontend (vite build)"
-        & npm run build
+        Invoke-NativeChecked 'npm' @('run', 'build') 'Build do frontend'
+        if (-not (Test-Path (Join-Path $front 'dist\index.html') -PathType Leaf)) {
+            throw 'Build do frontend nao gerou dist\index.html.'
+        }
         Write-Ok "Frontend compilado em frontend\dist"
     } finally { Pop-Location }
 }
@@ -405,24 +509,34 @@ function Register-Services([string]$nssmExe) {
     $py       = Join-Path $backend ".venv\Scripts\python.exe"
     $run      = Join-Path $backend "run.py"
 
-    # Remove serviços antigos (se existirem)
-    foreach ($s in @($svcApi, $svcFront)) {
-        & $nssmExe stop $s 2>$null | Out-Null
-        & $nssmExe remove $s confirm 2>$null | Out-Null
+    # O frontend agora é servido pela API; remove somente o serviço Vite legado.
+    if (Get-Service $svcFront -ErrorAction SilentlyContinue) {
+        & $nssmExe stop $svcFront 2>$null | Out-Null
+        & $nssmExe remove $svcFront confirm 2>$null | Out-Null
+    }
+
+    $existingApi = Get-Service $svcApi -ErrorAction SilentlyContinue
+    if ($existingApi -and $existingApi.Status -ne 'Stopped') {
+        Stop-Service $svcApi -Force -ErrorAction Stop
     }
 
     Write-Step "Registrando serviço $svcApi"
-    & $nssmExe install $svcApi $py $run
-    & $nssmExe set $svcApi AppDirectory $backend
-    & $nssmExe set $svcApi DisplayName "Envio Apolices - API (FastAPI)"
-    & $nssmExe set $svcApi Description "Backend FastAPI do Sistema de Envio de Apolices"
-    & $nssmExe set $svcApi Start SERVICE_AUTO_START
-    & $nssmExe set $svcApi AppStdout (Join-Path $backend "logs\api.out.log")
-    & $nssmExe set $svcApi AppStderr (Join-Path $backend "logs\api.err.log")
+    if (-not $existingApi) {
+        Invoke-NativeChecked $nssmExe @('install', $svcApi, $py, $run) 'Registro do serviço da API'
+        $script:ServiceCreated = $true
+    }
+    Invoke-NativeChecked $nssmExe @('set', $svcApi, 'Application', $py) 'Configuração do executável da API'
+    Invoke-NativeChecked $nssmExe @('set', $svcApi, 'AppParameters', $run) 'Configuração dos argumentos da API'
+    Invoke-NativeChecked $nssmExe @('set', $svcApi, 'AppDirectory', $backend) 'Configuração do diretório da API'
+    Invoke-NativeChecked $nssmExe @('set', $svcApi, 'DisplayName', 'Envio Apolices - API (FastAPI)') 'Configuração do nome do serviço'
+    Invoke-NativeChecked $nssmExe @('set', $svcApi, 'Description', 'Backend FastAPI do Sistema de Envio de Apolices') 'Configuração da descrição do serviço'
+    Invoke-NativeChecked $nssmExe @('set', $svcApi, 'Start', 'SERVICE_AUTO_START') 'Configuração do início automático'
     New-Item -ItemType Directory -Path (Join-Path $backend "logs") -Force | Out-Null
+    Invoke-NativeChecked $nssmExe @('set', $svcApi, 'AppStdout', (Join-Path $backend 'logs\api.out.log')) 'Configuração do log stdout'
+    Invoke-NativeChecked $nssmExe @('set', $svcApi, 'AppStderr', (Join-Path $backend 'logs\api.err.log')) 'Configuração do log stderr'
 
     Write-Step "Iniciando $svcApi"
-    & $nssmExe start $svcApi
+    Invoke-NativeChecked $nssmExe @('start', $svcApi) 'Inicialização do serviço da API'
 
     if (-not $SkipFrontend) {
         Write-Ok "Frontend estático será servido pelo próprio backend (mesma origem)"
@@ -433,12 +547,14 @@ function Register-Services([string]$nssmExe) {
 
 function Open-Firewall {
     Write-Step "Liberando porta $ServicePort no firewall"
-    try {
-        New-NetFirewallRule -DisplayName "EnvioApolices-API"   -Direction Inbound -Protocol TCP -LocalPort $ServicePort -Action Allow -ErrorAction SilentlyContinue | Out-Null
-        Write-Ok "Regras de firewall criadas"
-    } catch {
-        Write-Warn "Falha ao criar regras de firewall: $_"
+    $rule = Get-NetFirewallRule -DisplayName 'EnvioApolices-API' -ErrorAction SilentlyContinue
+    if ($rule) {
+        $rule | Set-NetFirewallRule -Enabled True -Direction Inbound -Action Allow -ErrorAction Stop | Out-Null
+        $rule | Get-NetFirewallPortFilter | Set-NetFirewallPortFilter -Protocol TCP -LocalPort $ServicePort -ErrorAction Stop | Out-Null
+    } else {
+        New-NetFirewallRule -DisplayName 'EnvioApolices-API' -Direction Inbound -Protocol TCP -LocalPort $ServicePort -Action Allow -ErrorAction Stop | Out-Null
     }
+    Write-Ok "Regra de firewall validada"
 }
 
 function Assert-DeploymentHealth {
@@ -470,14 +586,20 @@ Backup-CurrentCode
 try {
     Deploy-Sources
     Initialize-FreshBackendEnv
+    Configure-BackendEnv
     Setup-BackendEnv
     Build-Frontend
-    Open-Firewall
     Register-Services $nssm
     if (-not $SkipServices) { Assert-DeploymentHealth }
+    Open-Firewall
 } catch {
     Write-Err "Instalação falhou: $_"
     Restore-CurrentCode
+    Restore-ConfigFiles
+    if ($script:ServiceCreated) {
+        & $nssm stop 'EnvioApolices-API' 2>$null | Out-Null
+        & $nssm remove 'EnvioApolices-API' confirm 2>$null | Out-Null
+    }
     $service = Get-Service 'EnvioApolices-API' -ErrorAction SilentlyContinue
     if ($service) { Restart-Service 'EnvioApolices-API' -Force -ErrorAction SilentlyContinue }
     throw
@@ -496,5 +618,9 @@ if ($script:BackendEnvCreated) {
     Write-Host "  Login admin:  admin / $script:GeneratedAdminPassword"     -ForegroundColor Yellow
     Write-Host "  Login diretor: admindiretor / $script:GeneratedDiretorPassword" -ForegroundColor Yellow
     Write-Host "  Guarde essas senhas e troque-as no primeiro login."       -ForegroundColor Yellow
+}
+if ($script:WebhookTokenGenerated) {
+    Write-Host "  Webhook Brevo: um token novo foi salvo em backend\.env." -ForegroundColor Yellow
+    Write-Host "  Copie-o para a autenticacao Bearer do webhook no painel Brevo." -ForegroundColor Yellow
 }
 Write-Host "========================================================" -ForegroundColor Green

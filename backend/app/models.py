@@ -129,12 +129,20 @@ class Envio(Base):
     nome_arquivo_final: Mapped[str | None] = mapped_column(String(500), nullable=True)
     nome_boleto: Mapped[str | None] = mapped_column(String(500), nullable=True)
     numero_apolice: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    # Snapshot do endereço efetivamente usado nesta tentativa. Não depende de
+    # alterações posteriores no cadastro do cliente.
+    destinatario_email: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="pendente")
     erro_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
     caminho_backup: Mapped[str | None] = mapped_column(String(500), nullable=True)
     caminho_backup_boleto: Mapped[str | None] = mapped_column(String(500), nullable=True)
     arquivo_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    # Nova linha por tentativa evita que webhooks atrasados de um envio antigo
+    # corrompam o estado de um reenvio mais recente.
+    reenvio_de_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, unique=True, index=True
+    )
     provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     delivery_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
     delivery_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

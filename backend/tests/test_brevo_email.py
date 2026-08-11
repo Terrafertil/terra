@@ -43,6 +43,40 @@ class BrevoSettingsTests(unittest.TestCase):
         self.assertEqual(config.smtp_from_email, "sender@example.com")
         self.assertTrue(config.email_configured)
 
+    def test_brevo_credentials_override_generic_smtp_values(self):
+        config = self._settings(
+            USE_BREVO="true",
+            SMTP_HOST="smtp-relay.brevo.com",
+            SMTP_USER="legacy-user",
+            SMTP_PASSWORD="legacy-password",
+            SMTP_FROM_EMAIL="legacy@example.com",
+            BREVO_SMTP_LOGIN="brevo-user",
+            BREVO_SMTP_KEY="brevo-key",
+            BREVO_SENDER_EMAIL="sender@example.com",
+        )
+
+        self.assertEqual(config.smtp_user, "brevo-user")
+        self.assertEqual(config.smtp_password, "brevo-key")
+        self.assertEqual(config.smtp_from_email, "sender@example.com")
+
+    def test_legacy_ses_credentials_are_not_reused_against_brevo(self):
+        config = self._settings(
+            USE_BREVO="true",
+            SMTP_HOST="email-smtp.sa-east-1.amazonaws.com",
+            SMTP_USER="ses-user",
+            SMTP_PASSWORD="ses-password",
+            SMTP_FROM_EMAIL="sender@example.com",
+        )
+
+        self.assertEqual(config.smtp_host, "smtp-relay.brevo.com")
+        self.assertEqual(config.smtp_user, "")
+        self.assertEqual(config.smtp_password, "")
+        self.assertFalse(config.email_configured)
+
+    def test_webhook_requires_a_long_token(self):
+        self.assertFalse(self._settings(BREVO_WEBHOOK_TOKEN="short").webhook_configured)
+        self.assertTrue(self._settings(BREVO_WEBHOOK_TOKEN="x" * 32).webhook_configured)
+
     def test_port_465_uses_implicit_tls(self):
         config = self._settings(SMTP_PORT="465")
 

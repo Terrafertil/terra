@@ -4,8 +4,9 @@ from __future__ import annotations
 import re
 from typing import Iterable
 
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from .. import models
 from . import data_crypto_service as crypto
@@ -52,7 +53,9 @@ def decrypt_cliente_fields(c: models.Cliente) -> None:
         s = str(val)
         if s.startswith(crypto.SOC_PREFIX):
             continue
-        setattr(c, field, crypto.decrypt_field(s))
+        # Decifrar para uso da aplicação não é uma alteração de dados.
+        # Mantém o ORM limpo para evitar recifragem aleatória no autoflush.
+        set_committed_value(c, field, crypto.decrypt_field(s))
 
 
 def decrypt_many(clientes: Iterable[models.Cliente]) -> list[models.Cliente]:
@@ -209,15 +212,24 @@ def migrate_plaintext_clientes(db: Session) -> int:
     """Cifra registos antigos em texto claro (uma vez)."""
     if not crypto.encryption_enabled():
         return 0
-    rows = db.query(models.Cliente).all()
-    n = 0
+    # Este filtro é avaliado no banco antes do listener ``load`` decifrar os
+    # campos. Clientes já enc2/soc2 não podem ser recifrados a cada startup.
+    plaintext_conditions = []
+    for field in _SENSITIVE:
+        column = getattr(models.Cliente, field)
+        plaintext_conditions.append(
+            and_(
+                column.isnot(None),
+                column != "",
+                ~column.like(f"{crypto.ENC_PREFIX}%"),
+                ~column.like(f"{crypto.SOC_PREFIX}%"),
+            )
+        )
+    rows = db.query(models.Cliente).filter(or_(*plaintext_conditions)).all()
     for c in rows:
-        if (c.nome or "").startswith(crypto.ENC_PREFIX):
-            continue
         encrypt_cliente_fields(c)
-        n += 1
-    if n:
+    if rows:
         db.commit()
         log = __import__("logging").getLogger("cliente_crypto")
-        log.info("Migrados %s cliente(s) para criptografia dupla.", n)
-    return n
+        log.info("Migrados %s cliente(s) para criptografia dupla.", len(rows))
+    return len(rows)

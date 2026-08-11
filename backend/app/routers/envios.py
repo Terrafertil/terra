@@ -53,11 +53,56 @@ def _guardar_preview(path: Path) -> str:
 
 def _envio_out(envio: models.Envio) -> schemas.EnvioOut:
     out = schemas.EnvioOut.model_validate(envio)
-    out.pode_reenviar = bool(envio.caminho_backup)
+    out.pode_reenviar = envio_service.envio_pode_reenviar(envio)
+    out.deduplicado = bool(getattr(envio, "deduplicado", False))
     if envio.cliente:
         out.cliente_nome = envio.cliente.nome
-        out.cliente_email = envio.cliente.email
+        out.cliente_email_atual = envio.cliente.email
+    destinatario = envio.destinatario_email
+    out.destinatario_email = destinatario
+    # Compatibilidade com clientes antigos da API: agora este campo também
+    # representa somente o snapshot. Registros legados ficam nulos para não
+    # atribuir retroativamente um destinatário que pode ter sido alterado.
+    out.cliente_email = destinatario
     return out
+
+
+def _marcar_envios_com_reenvio(db: Session, envios: list[models.Envio]) -> None:
+    ids = [envio.id for envio in envios if envio.id is not None]
+    if not ids:
+        return
+    pais = {
+        row[0]
+        for row in db.query(models.Envio.reenvio_de_id)
+        .filter(models.Envio.reenvio_de_id.in_(ids))
+        .all()
+        if row[0] is not None
+    }
+    for envio in envios:
+        envio._tem_reenvio = envio.id in pais
+
+
+def _falha_envio_http(envio: models.Envio, etapa: str | None) -> HTTPException:
+    smtp = etapa == "smtp" or envio.delivery_status == "smtp_error"
+    if smtp:
+        status_code = 502
+        code = "smtp_send_failed"
+        mensagem = "O provedor de e-mail não aceitou o envio."
+    else:
+        status_code = 500
+        code = "email_processing_failed"
+        mensagem = "O envio não foi concluído durante o processamento dos anexos."
+    if envio.erro_msg:
+        mensagem = f"{mensagem} {envio.erro_msg}"
+    return HTTPException(
+        status_code=status_code,
+        detail={
+            "code": code,
+            "message": mensagem,
+            "envio_id": envio.id,
+            "pode_reenviar": envio_service.envio_pode_reenviar(envio),
+        },
+    )
 
 
 @router.get("", response_model=list[schemas.EnvioOut])
@@ -88,6 +133,7 @@ def listar(
         q = q.filter(models.Envio.criado_em >= limite)
 
     rows = q.order_by(models.Envio.criado_em.desc()).limit(500).all()
+    _marcar_envios_com_reenvio(db, rows)
     return [_envio_out(e) for e in rows]
 
 
@@ -130,9 +176,11 @@ def exportar_csv(
             "tipo_envio",
             "tipo_codigo",
             "status",
+            "reenvio_de_id",
             "cliente_id",
             "cliente_nome",
             "cliente_email",
+            "cliente_email_atual",
             "numero_apolice",
             "arquivo",
             "enviado_por",
@@ -150,8 +198,10 @@ def exportar_csv(
                 e.tipo_envio,
                 e.tipo_codigo or "",
                 e.status,
+                e.reenvio_de_id or "",
                 e.cliente_id,
                 e.cliente.nome if e.cliente else "",
+                e.destinatario_email or "",
                 e.cliente.email if e.cliente else "",
                 e.numero_apolice or "",
                 e.nome_arquivo_original or "",
@@ -173,11 +223,14 @@ def exportar_csv(
 @router.post("/reenviar-erros", response_model=schemas.EnvioReenvioLoteOut)
 def reenviar_erros_lote(
     dias: int = Query(30, ge=1, le=365),
+    tipo: str | None = Query(None, description="Filtrar FULL ou MANUAL"),
     db: Session = Depends(get_db),
-    _=Depends(require_user),
+    usuario: models.Usuario = Depends(require_user),
 ):
     """Reenvia em lote envios com status erro (últimos N dias)."""
-    resultado = envio_service.reenviar_envios_com_erro(db, dias=dias)
+    resultado = envio_service.reenviar_envios_com_erro(
+        db, dias=dias, tipo=tipo, usuario_envio=usuario
+    )
     return schemas.EnvioReenvioLoteOut(**resultado)
 
 
@@ -185,17 +238,22 @@ def reenviar_erros_lote(
 def reenviar_um(
     eid: int,
     db: Session = Depends(get_db),
-    _=Depends(require_user),
+    usuario: models.Usuario = Depends(require_user),
 ):
     try:
-        envio = envio_service.reenviar_envio(db, eid)
+        envio = envio_service.reenviar_envio(
+            db, eid, usuario_envio=usuario
+        )
     except ValueError as e:
         raise HTTPException(400, str(e))
+    etapa = getattr(envio, "_erro_etapa", None)
     db.refresh(envio)
+    if envio.status != "enviado":
+        raise _falha_envio_http(envio, etapa)
     envio = (
         db.query(models.Envio)
         .options(joinedload(models.Envio.cliente))
-        .filter(models.Envio.id == eid)
+        .filter(models.Envio.id == envio.id)
         .first()
     )
     return _envio_out(envio)
@@ -401,7 +459,7 @@ async def _processar_request_manual(
     usuario_db_id = usuario.id if getattr(usuario, "id", None) not in (None, 0) else None
     rotulo = file_provenance.rotulo_usuario(usuario.nome, usuario.username)
 
-    def _processar_em_thread() -> int:
+    def _processar_em_thread() -> tuple[int, str | None]:
         db_thread = SessionLocal()
         try:
             cli = cliente_crypto.get_by_id(db_thread, cliente_db_id)
@@ -430,12 +488,12 @@ async def _processar_request_manual(
                 boleto_path=destino_boleto,
                 boleto_nome_original=boleto_nome_original,
             )
-            return int(envio_thread.id)
+            return int(envio_thread.id), getattr(envio_thread, "_erro_etapa", None)
         finally:
             db_thread.close()
 
     try:
-        envio_id = await run_in_threadpool(_processar_em_thread)
+        envio_id, erro_etapa = await run_in_threadpool(_processar_em_thread)
     except PdfRequerSenhaError as e:
         destino_up.unlink(missing_ok=True)
         if destino_boleto:
@@ -452,19 +510,10 @@ async def _processar_request_manual(
             destino_boleto.unlink(missing_ok=True)
         raise HTTPException(400, str(e))
     except Exception:
-        destino_up.unlink(missing_ok=True)
-        if destino_boleto:
-            destino_boleto.unlink(missing_ok=True)
+        # Falhas inesperadas podem ocorrer antes de existir um backup. Mantém
+        # o upload no disco para investigação/recuperação operacional.
+        log.exception("Falha inesperada ao processar envio manual")
         raise
-
-    proc = settings.data_path(settings.processed_folder)
-    proc.mkdir(parents=True, exist_ok=True)
-    for origem in (destino_up, destino_boleto):
-        if origem and origem.exists():
-            try:
-                origem.replace(proc / origem.name)
-            except Exception:
-                origem.unlink(missing_ok=True)
 
     envio = (
         db.query(models.Envio)
@@ -476,6 +525,19 @@ async def _processar_request_manual(
         raise HTTPException(500, "Envio processado mas não encontrado no histórico")
     if envio.cliente:
         cliente_crypto.decrypt_cliente_fields(envio.cliente)
+    if envio.status != "enviado":
+        raise _falha_envio_http(envio, erro_etapa)
+
+    proc = settings.data_path(settings.processed_folder)
+    proc.mkdir(parents=True, exist_ok=True)
+    for origem in (destino_up, destino_boleto):
+        if origem and origem.exists():
+            try:
+                origem.replace(proc / origem.name)
+            except Exception as exc:
+                # O backup já foi confirmado; ainda assim, não apaga o upload
+                # se a organização na pasta de processados falhar.
+                log.warning("Não foi possível mover upload processado %s: %s", origem, exc)
     return _envio_out(envio)
 
 

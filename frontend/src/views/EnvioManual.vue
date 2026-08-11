@@ -4,6 +4,16 @@ import { useRoute, RouterLink } from 'vue-router'
 import { api } from '../api'
 import { useUiStore } from '../stores/ui'
 import { sanitizeEmailHtml } from '../utils/sanitizeEmail'
+import {
+  ANALISE_PDF_TIMEOUT_MS,
+  ENVIO_EMAIL_TIMEOUT_MS,
+  classeDeliveryStatus,
+  destinatarioDoEnvio,
+  feedbackDoEnvio,
+  mensagemErroApi,
+  rotuloDeliveryStatus,
+  rotuloStatusEnvio,
+} from '../utils/envioFeedback'
 
 const ui = useUiStore()
 
@@ -68,6 +78,7 @@ const enviando = ref(false)
 const demonstrando = ref(false)
 const erro = ref('')
 const ok = ref('')
+const aviso = ref('')
 const ultimoEnvio = ref(null)
 const demo = ref(null)
 const demoHtmlSeguro = computed(() => sanitizeEmailHtml(demo.value?.html))
@@ -130,6 +141,11 @@ watch(emailDestino, () => {
   }
 })
 
+watch(extrairDados, (habilitado) => {
+  if (habilitado && arquivo.value) analisarArquivo()
+  if (!habilitado) analise.value = null
+})
+
 function aplicarDadosDaAnalise(data) {
   if (data.numero_apolice) {
     numeroApolice.value = data.numero_apolice
@@ -161,6 +177,7 @@ async function analisarArquivo() {
   }
   analisando.value = true
   analise.value = null
+  erro.value = ''
   const fd = new FormData()
   fd.append('arquivo', arquivo.value)
   fd.append('usar_ocr', usarOcr.value ? 'true' : 'false')
@@ -168,11 +185,15 @@ async function analisarArquivo() {
   try {
     const { data } = await api.post('/api/envios/analisar-pdf', fd, {
       headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: ANALISE_PDF_TIMEOUT_MS,
     })
     analise.value = data
     aplicarDadosDaAnalise(data)
   } catch (e) {
-    erro.value = e.response?.data?.detail || 'Não foi possível analisar o PDF'
+    erro.value =
+      e.code === 'ECONNABORTED'
+        ? 'A análise do PDF excedeu 5 minutos. Tente novamente sem OCR ou verifique o servidor.'
+        : mensagemErroApi(e, 'Não foi possível analisar o PDF')
   } finally {
     analisando.value = false
   }
@@ -187,7 +208,7 @@ function onArquivo(e) {
   if (arquivo.value) {
     // Preview temporário; após a análise troca pela URL same-origin da API.
     pdfPreviewUrl.value = URL.createObjectURL(arquivo.value)
-    analisarArquivo()
+    if (extrairDados.value) analisarArquivo()
   } else {
     pdfPreviewUrl.value = null
     analise.value = null
@@ -205,7 +226,9 @@ function montarFormData() {
     fd.append('cliente_id', clienteId.value)
   }
   if (numeroApolice.value) fd.append('numero_apolice', numeroApolice.value)
-  fd.append('extrair_dados', extrairDados.value ? 'true' : 'false')
+  // A análise automática já ocorreu antes da confirmação e o número da apólice
+  // é obrigatório no formulário. Evita repetir extração/OCR durante o POST SMTP.
+  fd.append('extrair_dados', 'false')
   if (tipoCodigo.value)    fd.append('tipo_codigo', tipoCodigo.value)
   if (autoId.value)        fd.append('auto_id', autoId.value)
   if (corpoEmailId.value)  fd.append('corpo_email_id', corpoEmailId.value)
@@ -243,7 +266,7 @@ function fecharConfirmacao() {
 }
 
 async function enviar() {
-  erro.value = ''; ok.value = ''; ultimoEnvio.value = null
+  erro.value = ''; ok.value = ''; aviso.value = ''; ultimoEnvio.value = null
   if (!validar({ exigirArquivo: true })) {
     mostrarConfirmacao.value = false
     return
@@ -254,25 +277,36 @@ async function enviar() {
     return
   }
   enviando.value = true
+  const destinoConfirmado = emailDestino.value
+  let recebeuResposta = false
   try {
     const { data } = await api.post('/api/envios/manual', montarFormData(), {
       headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: ENVIO_EMAIL_TIMEOUT_MS,
     })
+    recebeuResposta = true
     ultimoEnvio.value = data
-    if (data.status === 'enviado') {
-      const dest = data.cliente_email || emailDestino.value || `cliente ${data.cliente_id}`
-      ok.value =
-        `SMTP aceitou o envio para ${dest}. ` +
-        'Se não chegar, confira spam e o painel Brevo (remetente/domínio autenticados).'
-    } else {
-      erro.value = `Status "${data.status}": ${data.erro_msg || 'falha no envio'}`
-    }
-    await carregarOpcoes()
+    const feedback = feedbackDoEnvio(data, { fallbackDestinatario: destinoConfirmado })
+    if (feedback.tipo === 'erro') erro.value = feedback.texto
+    else if (feedback.tipo === 'aviso') aviso.value = feedback.texto
+    else ok.value = feedback.texto
   } catch (e) {
-    erro.value = e.response?.data?.detail || 'Falha no envio'
+    erro.value =
+      e.code === 'ECONNABORTED'
+        ? 'O servidor não confirmou o resultado em 5 minutos. Consulte o Histórico antes de tentar novamente, pois o SMTP pode ter aceitado o envio.'
+        : mensagemErroApi(e, 'Falha no envio')
   } finally {
     enviando.value = false
     mostrarConfirmacao.value = false
+  }
+
+  if (recebeuResposta) {
+    try {
+      await carregarOpcoes()
+    } catch {
+      const msg = 'O resultado acima é válido, mas não foi possível atualizar as opções da tela.'
+      aviso.value = aviso.value ? `${aviso.value} ${msg}` : msg
+    }
   }
 }
 
@@ -285,7 +319,7 @@ async function confirmarEEnviar() {
 }
 
 async function demonstrar() {
-  erro.value = ''; ok.value = ''; demo.value = null; ultimoEnvio.value = null
+  erro.value = ''; ok.value = ''; aviso.value = ''; demo.value = null; ultimoEnvio.value = null
   if (!validar({ exigirArquivo: false })) return
   demonstrando.value = true
   try {
@@ -294,7 +328,7 @@ async function demonstrar() {
     })
     demo.value = data
   } catch (e) {
-    erro.value = e.response?.data?.detail || 'Não foi possível gerar a demonstração'
+    erro.value = mensagemErroApi(e, 'Não foi possível gerar a demonstração')
   } finally {
     demonstrando.value = false
   }
@@ -330,6 +364,7 @@ onMounted(async () => {
 
     <div v-if="erro" class="alert alert-err">{{ erro }}</div>
     <div v-if="ok"   class="alert alert-ok">{{ ok }}</div>
+    <div v-if="aviso" class="alert alert-warn">{{ aviso }}</div>
 
     <form @submit.prevent="pedirConfirmacao">
       <div class="card">
@@ -369,7 +404,11 @@ onMounted(async () => {
             <label>PDF da apólice *</label>
             <input type="file" accept="application/pdf" @change="onArquivo" />
             <label v-if="ui.ocrDisponivel" class="ocr-toggle mt-2" style="display:flex;align-items:center;gap:.4rem;font-weight:500">
-              <input v-model="usarOcr" type="checkbox" @change="arquivo && analisarArquivo()" />
+              <input
+                v-model="usarOcr"
+                type="checkbox"
+                @change="arquivo && extrairDados && analisarArquivo()"
+              />
               Usar OCR se o PDF for só imagem
             </label>
           </div>
@@ -542,11 +581,26 @@ onMounted(async () => {
     <div v-if="ultimoEnvio" class="card mt-4">
       <h3>Último envio</h3>
       <p>ID: <strong>{{ ultimoEnvio.id }}</strong></p>
-      <p>Para: <strong>{{ ultimoEnvio.cliente_email || '—' }}</strong></p>
+      <p>Para: <strong>{{ destinatarioDoEnvio(ultimoEnvio) }}</strong></p>
       <p>Assunto: {{ ultimoEnvio.assunto_email || '—' }}</p>
-      <p>Status: <span class="badge" :class="ultimoEnvio.status">{{ ultimoEnvio.status }}</span></p>
+      <p>
+        Envio SMTP:
+        <span class="badge" :class="ultimoEnvio.status">
+          {{ rotuloStatusEnvio(ultimoEnvio.status) }}
+        </span>
+      </p>
+      <p v-if="ultimoEnvio.deduplicado" class="alert alert-warn">
+        Registro já existente; nenhum novo e-mail foi disparado nesta tentativa.
+      </p>
       <p v-if="ultimoEnvio.delivery_status">
-        Entrega (Brevo): <strong>{{ ultimoEnvio.delivery_status }}</strong>
+        Entrega (Brevo):
+        <span class="badge" :class="classeDeliveryStatus(ultimoEnvio.delivery_status)">
+          {{ rotuloDeliveryStatus(ultimoEnvio.delivery_status) }}
+        </span>
+      </p>
+      <p v-else class="text-muted">Entrega (Brevo): sem confirmação.</p>
+      <p v-if="ultimoEnvio.delivery_updated_at" class="text-muted">
+        Atualizado em {{ new Date(ultimoEnvio.delivery_updated_at).toLocaleString() }}
       </p>
       <p v-if="ultimoEnvio.erro_msg" class="text-muted">Erro: {{ ultimoEnvio.erro_msg }}</p>
     </div>

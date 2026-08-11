@@ -21,3 +21,9 @@ def _cliente_encrypt(_mapper, _connection, target: models.Cliente) -> None:
 def _cliente_decrypt(target: models.Cliente, _context) -> None:
     if encryption_enabled():
         decrypt_cliente_fields(target)
+
+
+@event.listens_for(models.Cliente, "refresh")
+def _cliente_decrypt_refresh(target: models.Cliente, _context, _attrs) -> None:
+    if encryption_enabled():
+        decrypt_cliente_fields(target)

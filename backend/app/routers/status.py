@@ -32,6 +32,7 @@ def _montar_status(db: Session, *, expose_paths: bool = False) -> schemas.Status
         auth_enabled=settings.auth_enabled,
         email_provider=settings.email_provider,
         email_configured=settings.email_configured,
+        webhook_configured=settings.webhook_configured,
         full_enabled=effective,
         full_env_enabled=env_on,
         full_scan_active=scan_active,

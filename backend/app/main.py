@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import logging
+from logging.handlers import RotatingFileHandler
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -47,9 +49,34 @@ logging.basicConfig(
 log = logging.getLogger("main")
 
 
+def _configure_file_logging() -> None:
+    """Mantem diagnostico local mesmo fora do servico NSSM."""
+    logs_dir = BASE_DIR / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_path = (logs_dir / "api.log").resolve()
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        if (
+            isinstance(handler, RotatingFileHandler)
+            and Path(handler.baseFilename).resolve() == log_path
+        ):
+            return
+    handler = RotatingFileHandler(
+        log_path,
+        maxBytes=5 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    )
+    root_logger.addHandler(handler)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings.ensure_dirs()
+    _configure_file_logging()
     validate_security_config()
     init_db()
     aplicar_retencao_automatica()
@@ -62,6 +89,15 @@ async def lifespan(app: FastAPI):
     watcher_global.start()
     log.info("Backend pronto. auth_enabled=%s full_enabled=%s",
              settings.auth_enabled, settings.full_enabled)
+    if not settings.email_configured:
+        log.error(
+            "Envio de e-mail indisponivel: credenciais/remetente SMTP incompletos no .env"
+        )
+    if settings.use_brevo and not settings.webhook_configured:
+        log.warning(
+            "Webhook Brevo nao configurado: o SMTP pode aceitar mensagens, mas o "
+            "historico nao recebera confirmacoes de entrega ou bounce"
+        )
     try:
         yield
     finally:

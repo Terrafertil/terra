@@ -70,6 +70,7 @@ def init_db() -> None:
     _seed_runtime_config()
     _import_crypto_events()
     _migrate_clientes_encryption_data()
+    _migrate_envios_encryption_data()
     _seed_diretor_conta()
     _run_alembic_migrations()
 
@@ -100,6 +101,17 @@ def _seed_diretor_conta() -> None:
 
 def _import_crypto_events() -> None:
     from .events import cliente_crypto_events  # noqa: F401
+    from .events import envio_crypto_events  # noqa: F401
+
+
+def _migrate_envios_encryption_data() -> None:
+    from .services import envio_crypto
+
+    s = SessionLocal()
+    try:
+        envio_crypto.migrate_plaintext_envios(s)
+    finally:
+        s.close()
 
 
 def _migrate_clientes_encryption_data() -> None:
@@ -265,6 +277,7 @@ def _migrate_envios_columns() -> None:
     if "envios" not in insp.get_table_names():
         return
     cols = {c["name"] for c in insp.get_columns("envios")}
+    indexes = {idx["name"]: idx for idx in insp.get_indexes("envios")}
     with engine.begin() as conn:
         if "tipo_codigo" not in cols:
             conn.execute(text("ALTER TABLE envios ADD COLUMN tipo_codigo VARCHAR(60)"))
@@ -292,6 +305,12 @@ def _migrate_envios_columns() -> None:
             conn.execute(text("ALTER TABLE envios ADD COLUMN delivery_status VARCHAR(40)"))
         if "delivery_updated_at" not in cols:
             conn.execute(text("ALTER TABLE envios ADD COLUMN delivery_updated_at DATETIME"))
+        if "destinatario_email" not in cols:
+            conn.execute(
+                text("ALTER TABLE envios ADD COLUMN destinatario_email VARCHAR(1024)")
+            )
+        if "reenvio_de_id" not in cols:
+            conn.execute(text("ALTER TABLE envios ADD COLUMN reenvio_de_id INTEGER"))
         conn.execute(
             text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS ux_envios_idempotency_key "
@@ -304,6 +323,17 @@ def _migrate_envios_columns() -> None:
                 "ON envios (provider_message_id)"
             )
         )
+        # Uma tentativa só pode originar um filho direto; novos retries formam
+        # uma cadeia. Isso também fecha a corrida de duplo clique concorrente.
+        reenvio_index = indexes.get("ix_envios_reenvio_de_id")
+        if not reenvio_index or not reenvio_index.get("unique"):
+            conn.execute(text("DROP INDEX IF EXISTS ix_envios_reenvio_de_id"))
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_envios_reenvio_de_id "
+                    "ON envios (reenvio_de_id)"
+                )
+            )
 
 
 def _migrate_avulso_para_manual() -> None:

@@ -1,6 +1,6 @@
 """Configurações carregadas do .env."""
 from pathlib import Path
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -56,25 +56,20 @@ class Settings(BaseSettings):
     # SMTP transacional (Brevo — relay SMTP com anexo PDF)
     smtp_host: str = ""
     smtp_port: int = 587
-    smtp_user: str = Field(
-        default="",
-        validation_alias=AliasChoices("SMTP_USER", "BREVO_SMTP_LOGIN"),
-    )
-    smtp_password: str = Field(
-        default="",
-        validation_alias=AliasChoices("SMTP_PASSWORD", "BREVO_SMTP_KEY"),
-    )
+    # Mantemos as variaveis genericas separadas das aliases Brevo. AliasChoices
+    # escolhe a primeira variavel presente mesmo quando ela esta vazia, o que
+    # permitia credenciais SES antigas prevalecerem em instalacoes migradas.
+    smtp_user: str = ""
+    smtp_password: str = ""
     smtp_use_tls: bool = True
     smtp_use_ssl: bool = False
-    smtp_from_email: str = Field(
-        default="",
-        validation_alias=AliasChoices("SMTP_FROM_EMAIL", "BREVO_SENDER_EMAIL"),
-    )
-    smtp_from_name: str = Field(
-        default="Sistema de Envio",
-        validation_alias=AliasChoices("SMTP_FROM_NAME", "BREVO_SENDER_NAME"),
-    )
+    smtp_from_email: str = ""
+    smtp_from_name: str = "Sistema de Envio"
     use_brevo: bool = True
+    brevo_smtp_login: str = ""
+    brevo_smtp_key: str = ""
+    brevo_sender_email: str = ""
+    brevo_sender_name: str = ""
     brevo_max_message_mb: int = 20
     brevo_webhook_token: str = ""
 
@@ -84,9 +79,29 @@ class Settings(BaseSettings):
             return self
 
         host = (self.smtp_host or "").strip().lower()
+        host_ses_legado = host.endswith(".amazonaws.com")
         # Migração segura: um .env antigo do SES não pode continuar enviando pela AWS.
-        if not host or host.endswith(".amazonaws.com"):
+        if not host or host_ses_legado:
             self.smtp_host = "smtp-relay.brevo.com"
+
+        login_brevo = (self.brevo_smtp_login or "").strip()
+        chave_brevo = (self.brevo_smtp_key or "").strip()
+        remetente_brevo = (self.brevo_sender_email or "").strip()
+        nome_brevo = (self.brevo_sender_name or "").strip()
+
+        if login_brevo:
+            self.smtp_user = login_brevo
+        elif host_ses_legado:
+            # Nao tente autenticar no relay Brevo com um login SES preservado.
+            self.smtp_user = ""
+        if chave_brevo:
+            self.smtp_password = chave_brevo
+        elif host_ses_legado:
+            self.smtp_password = ""
+        if remetente_brevo:
+            self.smtp_from_email = remetente_brevo
+        if nome_brevo:
+            self.smtp_from_name = nome_brevo
 
         # A porta 465 usa TLS implícito; 587/2525 usam STARTTLS.
         if self.smtp_port == 465:
@@ -110,6 +125,10 @@ class Settings(BaseSettings):
             self.smtp_from_email,
         )
         return all(bool((valor or "").strip()) for valor in obrigatorios)
+
+    @property
+    def webhook_configured(self) -> bool:
+        return len((self.brevo_webhook_token or "").strip()) >= 32
 
     email_subject_default: str = "Envio de Apolice - {numero_apolice}"
     email_template_default: str = "templates/email_padrao.html"
@@ -145,6 +164,7 @@ class Settings(BaseSettings):
     ocr_enabled: bool = True
     ocr_max_pages: int = 5
     ocr_lang: str = "por"
+    ocr_page_timeout_seconds: int = 30
     tesseract_cmd: str = ""
 
     @property

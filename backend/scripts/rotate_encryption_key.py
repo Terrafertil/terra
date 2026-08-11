@@ -36,6 +36,34 @@ def _replace_env_value(content: str, key: str, value: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _load_destinatarios_plaintext(
+    connection: sqlite3.Connection,
+) -> list[tuple[int, str | None]]:
+    envio_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(envios)").fetchall()
+    }
+    if "destinatario_email" not in envio_columns:
+        return []
+    destinatarios: list[tuple[int, str | None]] = []
+    for envio_id, stored in connection.execute(
+        "SELECT id, destinatario_email FROM envios "
+        "WHERE destinatario_email IS NOT NULL"
+    ).fetchall():
+        if isinstance(stored, str) and stored.startswith(crypto.SOC_PREFIX):
+            raise SystemExit("Foram encontrados dados SOC. Desative o modo SOC primeiro.")
+        destinatarios.append((envio_id, crypto.decrypt_field(stored)))
+    return destinatarios
+
+
+def _encrypt_destinatarios(
+    destinatarios: list[tuple[int, str | None]],
+) -> list[tuple[str | None, int]]:
+    return [
+        (crypto.encrypt_field(destinatario), envio_id)
+        for envio_id, destinatario in destinatarios
+    ]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -96,6 +124,8 @@ def main() -> None:
                 values[field] = crypto.decrypt_field(stored)
             plaintext_rows.append((row[0], values))
 
+        destinatarios_plaintext = _load_destinatarios_plaintext(connection)
+
         old_password = settings.data_encryption_password
         settings.data_encryption_password = new_password
         crypto._derive_keys.cache_clear()
@@ -110,6 +140,7 @@ def main() -> None:
                     client_id,
                 )
             )
+        destinatarios_encrypted = _encrypt_destinatarios(destinatarios_plaintext)
 
         original_env = env_path.read_text(encoding="utf-8-sig")
         next_env = _replace_env_value(
@@ -127,6 +158,11 @@ def main() -> None:
                 "observacoes=?, cpf_hash=?, cnpj_hash=?, email_hash=? WHERE id=?",
                 encrypted_rows,
             )
+            if destinatarios_encrypted:
+                connection.executemany(
+                    "UPDATE envios SET destinatario_email=? WHERE id=?",
+                    destinatarios_encrypted,
+                )
             connection.commit()
             db_committed = True
             os.replace(temp_env, env_path)
@@ -142,7 +178,10 @@ def main() -> None:
     finally:
         connection.close()
 
-    print(f"Chave rotacionada para {len(plaintext_rows)} cliente(s).")
+    print(
+        f"Chave rotacionada para {len(plaintext_rows)} cliente(s) e "
+        f"{len(destinatarios_plaintext)} snapshot(s) de destinatário."
+    )
     print(f"Backup de recuperaÃ§Ã£o: {backup_dir}")
     print("Inicie novamente o serviÃ§o EnvioApolices-API e valide os clientes.")
 

@@ -77,6 +77,24 @@ def _apply_plaintext_normal(c: models.Cliente, plain: dict[str, str | None]) -> 
     cliente_crypto.encrypt_cliente_fields(c)
 
 
+def _plaintext_from_envio(
+    envio: models.Envio, *, chave_soc: str | None = None
+) -> str | None:
+    return crypto.decrypt_field_any(
+        envio.destinatario_email, chave_soc=chave_soc
+    )
+
+
+def _apply_envio_soc(
+    envio: models.Envio, destinatario: str | None, *, chave_soc: str
+) -> None:
+    envio.destinatario_email = crypto.encrypt_field_soc(destinatario, chave_soc)
+
+
+def _apply_envio_normal(envio: models.Envio, destinatario: str | None) -> None:
+    envio.destinatario_email = crypto.encrypt_field(destinatario)
+
+
 def ativar_modo_soc(
     db: Session,
     *,
@@ -117,11 +135,28 @@ def ativar_modo_soc(
         _apply_plaintext(c, plain, chave_soc=chave)
         migrados += 1
 
+    envios = db.query(models.Envio).filter(
+        models.Envio.destinatario_email.isnot(None)
+    ).all()
+    envios_migrados = 0
+    for envio in envios:
+        try:
+            destinatario = _plaintext_from_envio(envio, chave_soc=None)
+        except ValueError:
+            destinatario = _plaintext_from_envio(envio, chave_soc=chave)
+        _apply_envio_soc(envio, destinatario, chave_soc=chave)
+        envios_migrados += 1
+
     rc.soc_encryption_active = True
     rc.soc_key_verifier = crypto.soc_key_fingerprint(chave)
     db.commit()
 
-    log.warning("MODO SOC ATIVADO. Clientes recifrados: %s. Motivo: %s", migrados, texto_motivo)
+    log.warning(
+        "MODO SOC ATIVADO. Clientes recifrados: %s; snapshots de envio: %s. Motivo: %s",
+        migrados,
+        envios_migrados,
+        texto_motivo,
+    )
     return {
         "soc_mode_active": True,
         "clientes_recifrados": migrados,
@@ -145,6 +180,15 @@ def desativar_modo_soc(db: Session, *, chave_soc: str) -> dict:
         _apply_plaintext_normal(c, plain)
         migrados += 1
 
+    envios = db.query(models.Envio).filter(
+        models.Envio.destinatario_email.isnot(None)
+    ).all()
+    envios_migrados = 0
+    for envio in envios:
+        destinatario = _plaintext_from_envio(envio, chave_soc=chave)
+        _apply_envio_normal(envio, destinatario)
+        envios_migrados += 1
+
     rc.soc_mode_active = False
     rc.soc_encryption_active = False
     rc.soc_key_verifier = None
@@ -154,7 +198,11 @@ def desativar_modo_soc(db: Session, *, chave_soc: str) -> dict:
     rc.soc_ativado_por_nome = None
     db.commit()
 
-    log.info("Modo SOC desativado. Clientes restaurados para criptografia normal: %s", migrados)
+    log.info(
+        "Modo SOC desativado. Clientes restaurados: %s; snapshots de envio: %s",
+        migrados,
+        envios_migrados,
+    )
     return {
         "soc_mode_active": False,
         "clientes_restaurados": migrados,

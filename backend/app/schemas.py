@@ -190,6 +190,8 @@ class EnvioOut(BaseModel):
     cliente_id: int
     cliente_nome: str | None = None
     cliente_email: str | None = None
+    cliente_email_atual: str | None = None
+    destinatario_email: str | None = None
     tipo_envio: str
     tipo_codigo: str | None = None
     nome_arquivo_original: str | None = None
@@ -199,7 +201,9 @@ class EnvioOut(BaseModel):
     status: str
     erro_msg: str | None = None
     pode_reenviar: bool = False
+    deduplicado: bool = False
     arquivo_sha256: str | None = None
+    reenvio_de_id: int | None = None
     provider_message_id: str | None = None
     delivery_status: str | None = None
     delivery_updated_at: datetime | None = None
@@ -328,6 +332,7 @@ class StatusOut(BaseModel):
     auth_enabled: bool
     email_provider: str = "brevo"
     email_configured: bool = False
+    webhook_configured: bool = False
     full_enabled: bool
     full_env_enabled: bool
     full_scan_active: bool

@@ -63,7 +63,12 @@ def extrair_texto_ocr(caminho: Path, *, max_paginas: int | None = None) -> tuple
                     break
                 pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
                 img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                txt = pytesseract.image_to_string(img, lang=settings.ocr_lang)
+                timeout = max(5, min(120, int(settings.ocr_page_timeout_seconds)))
+                txt = pytesseract.image_to_string(
+                    img,
+                    lang=settings.ocr_lang,
+                    timeout=timeout,
+                )
                 if txt and txt.strip():
                     partes.append(txt)
         finally:
