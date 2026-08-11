@@ -85,6 +85,77 @@ class BrevoSettingsTests(unittest.TestCase):
 
 
 class BrevoEmailTests(unittest.TestCase):
+    def test_custom_body_receives_signature_at_the_bottom(self):
+        cid = "assinatura-teste@envio"
+
+        rendered = email_service.renderizar_template(
+            template_html="<p>Primeira linha</p><p>Ultima linha</p>",
+            assinatura_cid=cid,
+        )
+
+        self.assertGreater(rendered.index(f'cid:{cid}'), rendered.index("Ultima linha"))
+        self.assertEqual(rendered.count(f"cid:{cid}"), 1)
+
+    def test_signature_is_inserted_before_closing_body(self):
+        cid = "assinatura-documento@envio"
+
+        rendered = email_service.renderizar_template(
+            template_html="<html><body><p>Corpo</p></body></html>",
+            assinatura_cid=cid,
+        )
+
+        self.assertLess(rendered.index(f"cid:{cid}"), rendered.index("</body>"))
+        self.assertGreater(rendered.index(f"cid:{cid}"), rendered.index("Corpo"))
+
+    def test_template_that_already_uses_signature_cid_is_not_duplicated(self):
+        cid = "assinatura-legado@envio"
+
+        rendered = email_service.renderizar_template(
+            template_html='<p>Corpo</p><img src="cid:{{ assinatura_cid }}">',
+            assinatura_cid=cid,
+        )
+
+        self.assertEqual(rendered.count(f"cid:{cid}"), 1)
+
+    def test_signature_is_a_related_inline_part_referenced_by_cid(self):
+        smtp_context = MagicMock()
+        connection = smtp_context.return_value.__enter__.return_value
+        cid = "assinatura-mime@envio"
+
+        with tempfile.TemporaryDirectory() as directory:
+            signature = Path(directory) / "assinatura.png"
+            signature.write_bytes(b"\x89PNG\r\n\x1a\nimagem")
+            rendered = email_service.renderizar_template(
+                template_html="<p>Corpo do e-mail</p>",
+                assinatura_cid=cid,
+            )
+            with (
+                patch.object(email_service.settings, "use_brevo", True),
+                patch.object(email_service.settings, "smtp_host", "smtp-relay.brevo.com"),
+                patch.object(email_service.settings, "smtp_port", 587),
+                patch.object(email_service.settings, "smtp_use_tls", True),
+                patch.object(email_service.settings, "smtp_use_ssl", False),
+                patch.object(email_service.settings, "smtp_user", "login@example.com"),
+                patch.object(email_service.settings, "smtp_password", "smtp-key"),
+                patch.object(email_service.settings, "smtp_from_email", "sender@example.com"),
+                patch.object(email_service.smtplib, "SMTP", smtp_context),
+            ):
+                email_service.enviar_email(
+                    destinatario="client@example.com",
+                    assunto="Teste assinatura",
+                    corpo_html=rendered,
+                    assinatura_path=signature,
+                    assinatura_cid=cid,
+                )
+
+        message = connection.send_message.call_args.args[0]
+        html_part = next(part for part in message.walk() if part.get_content_type() == "text/html")
+        image_part = next(part for part in message.walk() if part.get_content_type() == "image/png")
+        self.assertIn(f"cid:{cid}", html_part.get_content())
+        self.assertEqual(image_part["Content-ID"], f"<{cid}>")
+        self.assertEqual(image_part.get_content_disposition(), "inline")
+        self.assertEqual(image_part.get_filename(), "assinatura.png")
+
     def test_apolice_e_boleto_mantem_nomes_distintos(self):
         smtp_context = MagicMock()
         connection = smtp_context.return_value.__enter__.return_value

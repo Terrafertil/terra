@@ -296,19 +296,53 @@ def _preparar_pdf_final(original: Path) -> tuple[Path, str, Path | None]:
         return original, original.name, None
 
 
-def _resolver_corpo_email(
+def _resolver_tipo_envio(
     db: Session, tipo_codigo: str | None
-) -> models.CorpoEmail | None:
+) -> models.TipoEnvio | None:
     if not tipo_codigo:
         return None
-    tipo = (
+    return (
         db.query(models.TipoEnvio)
         .filter(models.TipoEnvio.codigo == tipo_codigo)
         .first()
     )
+
+
+def _resolver_corpo_email(
+    db: Session, tipo_codigo: str | None
+) -> models.CorpoEmail | None:
+    tipo = _resolver_tipo_envio(db, tipo_codigo)
     if not tipo or not tipo.corpo_email_id:
         return None
     return db.get(models.CorpoEmail, tipo.corpo_email_id)
+
+
+def _resolver_template_assunto(
+    db: Session,
+    *,
+    tipo_codigo: str | None,
+    corpo: models.CorpoEmail | None,
+) -> str | None:
+    """Resolve assunto do tipo, mantendo o campo do corpo como legado."""
+    tipo = _resolver_tipo_envio(db, tipo_codigo)
+    if tipo and tipo.assunto_email_id:
+        assunto = db.get(models.AssuntoEmail, tipo.assunto_email_id)
+        if assunto and (assunto.assunto or "").strip():
+            return assunto.assunto.strip()
+    legado = (corpo.assunto or "").strip() if corpo else ""
+    return legado or None
+
+
+def _formatar_assunto(
+    numero_apolice: str | None,
+    *,
+    custom: str | None = None,
+) -> str:
+    template = custom.strip() if isinstance(custom, str) and custom.strip() else None
+    assunto = email_service.formatar_assunto(numero_apolice, custom=template).strip()
+    if "\r" in assunto or "\n" in assunto:
+        raise ValueError("O assunto do e-mail nao pode conter quebra de linha")
+    return assunto
 
 
 def _resolver_assinatura(
@@ -393,10 +427,13 @@ def renderizar_demonstracao(
         corpo = _resolver_corpo_email(db, tipo_codigo)
 
     assin = _resolver_assinatura(db, tipo_envio=tipo_envio, override_id=assinatura_id)
-    cid = email_service.gerar_cid() if assin and assin.arquivo else None
+    cid: str | None = None
     assin_path: Path | None = None
     if assin and assin.arquivo:
-        assin_path = settings.data_path(settings.assinaturas_folder) / assin.arquivo
+        caminho = settings.data_path(settings.assinaturas_folder) / assin.arquivo
+        if caminho.is_file():
+            assin_path = caminho
+            cid = email_service.gerar_cid()
 
     ctx = _montar_contexto(
         cliente=cliente,
@@ -406,8 +443,11 @@ def renderizar_demonstracao(
         tipo_codigo=tipo_codigo,
     )
 
-    assunto = email_service.formatar_assunto(
-        numero_apolice, custom=(corpo.assunto if corpo else None)
+    assunto = _formatar_assunto(
+        numero_apolice,
+        custom=_resolver_template_assunto(
+            db, tipo_codigo=tipo_codigo, corpo=corpo
+        ),
     )
     html = email_service.renderizar_template(
         contexto=ctx,
@@ -576,8 +616,19 @@ def processar_envio(
             tipo_envio=tipo_envio_normalizado,
             tipo_codigo=tipo_codigo,
         )
-        assunto = assunto_customizado or email_service.formatar_assunto(
-            numero_apolice, custom=(corpo.assunto if corpo else None)
+        assunto_explicito = (
+            assunto_customizado.strip()
+            if isinstance(assunto_customizado, str) and assunto_customizado.strip()
+            else None
+        )
+        assunto = _formatar_assunto(
+            numero_apolice,
+            custom=(
+                assunto_explicito
+                or _resolver_template_assunto(
+                    db, tipo_codigo=tipo_codigo, corpo=corpo
+                )
+            ),
         )
         corpo_html = email_service.renderizar_template(
             contexto=ctx,
@@ -776,8 +827,14 @@ def reenviar_envio(
             tipo_envio=novo_envio.tipo_envio,
             tipo_codigo=novo_envio.tipo_codigo,
         )
-        assunto = novo_envio.assunto_email or email_service.formatar_assunto(
-            novo_envio.numero_apolice, custom=(corpo.assunto if corpo else None)
+        assunto = _formatar_assunto(
+            novo_envio.numero_apolice,
+            custom=(
+                novo_envio.assunto_email
+                or _resolver_template_assunto(
+                    db, tipo_codigo=novo_envio.tipo_codigo, corpo=corpo
+                )
+            ),
         )
         corpo_html = email_service.renderizar_template(
             contexto=ctx,

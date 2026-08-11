@@ -106,6 +106,7 @@ onUnmounted(() => {
         <RouterLink v-if="mostrarAdministracao" class="nav-link" to="/full-config">FULL — Configuração</RouterLink>
         <RouterLink v-if="mostrarAdministracao" class="nav-link" to="/tipos-envio">Tipos de Envio</RouterLink>
         <RouterLink v-if="mostrarAdministracao" class="nav-link" to="/corpos-email">Corpos de E-mail</RouterLink>
+        <RouterLink v-if="mostrarAdministracao" class="nav-link" to="/assuntos">Assuntos</RouterLink>
         <RouterLink v-if="mostrarAdministracao" class="nav-link" to="/assinaturas">Assinaturas</RouterLink>
         <RouterLink v-if="mostrarAdministracao" class="nav-link" to="/capa">Capa</RouterLink>
         <RouterLink v-if="mostrarBackup" class="nav-link" to="/backup">Backup</RouterLink>

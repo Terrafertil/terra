@@ -4,6 +4,7 @@ import { useRoute, RouterLink } from 'vue-router'
 import { api } from '../api'
 import { useUiStore } from '../stores/ui'
 import { sanitizeEmailHtml } from '../utils/sanitizeEmail'
+import { assuntoVinculado } from '../utils/assuntoEmail'
 import {
   ANALISE_PDF_TIMEOUT_MS,
   ENVIO_EMAIL_TIMEOUT_MS,
@@ -61,6 +62,7 @@ const clientes = ref([])
 const autos = ref([])
 const tipos = ref([])
 const corpos = ref([])
+const assuntos = ref([])
 const assinaturas = ref([])
 
 const clienteId = ref(null)
@@ -116,17 +118,49 @@ const autosCliente = computed(() =>
   clienteId.value ? autos.value.filter((a) => a.cliente_id === clienteId.value) : []
 )
 
+const tipoSelecionado = computed(() =>
+  tipos.value.find((tipo) => tipo.codigo === tipoCodigo.value) || null
+)
+
+const corpoSelecionado = computed(() => {
+  const id = corpoEmailId.value || tipoSelecionado.value?.corpo_email_id
+  return corpos.value.find((corpo) => String(corpo.id) === String(id)) || null
+})
+
+const assuntoSelecionado = computed(() =>
+  assuntoVinculado(tipoSelecionado.value, assuntos.value)
+)
+
+const assuntoPrevisto = computed(() => {
+  const texto = assuntoSelecionado.value?.assunto || corpoSelecionado.value?.assunto
+  if (!texto) return 'Padrão global do sistema'
+  return texto.replaceAll('{numero_apolice}', numeroApolice.value || '')
+})
+
+const nomeOrigemAssunto = computed(() => {
+  if (assuntoSelecionado.value?.nome) return assuntoSelecionado.value.nome
+  if (corpoSelecionado.value?.assunto) return 'Legado do corpo de e-mail'
+  return 'Padrão do sistema'
+})
+
 async function carregarOpcoes() {
-  const [c, t, co, a, au] = await Promise.all([
+  const [c, t, co, s, a, au] = await Promise.all([
     api.get('/api/clientes', { params: { ativo: true } }),
     api.get('/api/tipos-envio', { params: { ativo: true } }),
-    api.get('/api/corpos-email', { params: { ativo: true } }),
+    // Assim como o backend, preservamos corpos que foram desativados depois
+    // de vinculados, para a prévia e a confirmação permanecerem fiéis.
+    api.get('/api/corpos-email'),
+    // O backend preserva o assunto já vinculado ao tipo mesmo se ele for
+    // desativado depois. Carregamos todos para a confirmação mostrar o texto
+    // exato que será enviado.
+    api.get('/api/assuntos-email'),
     api.get('/api/assinaturas', { params: { ativo: true } }),
     api.get('/api/autos', { params: { ativo: true } }),
   ])
   clientes.value = c.data
   tipos.value = t.data
   corpos.value = co.data
+  assuntos.value = s.data
   assinaturas.value = a.data
   autos.value = au.data
 }
@@ -470,7 +504,9 @@ onMounted(async () => {
             <label>Corpo de e-mail</label>
             <select v-model="corpoEmailId">
               <option :value="null">Padrão (do tipo de envio)</option>
-              <option v-for="c in corpos" :key="c.id" :value="c.id">{{ c.nome }}</option>
+              <option v-for="c in corpos" :key="c.id" :value="c.id">
+                {{ c.nome }}{{ c.ativo ? '' : ' (inativo)' }}
+              </option>
             </select>
           </div>
           <div>
@@ -523,9 +559,24 @@ onMounted(async () => {
         </div>
 
         <p class="text-muted mt-2" style="font-size: 0.9rem">
-          O texto do e-mail vem do corpo associado ao tipo de envio em
-          <RouterLink to="/corpos-email">Corpos de E-mail</RouterLink>.
+          O corpo e o assunto são definidos separadamente no tipo de envio.
+          Administre-os em <RouterLink to="/corpos-email">Corpos de E-mail</RouterLink>,
+          <RouterLink to="/assuntos">Assuntos</RouterLink> e
+          <RouterLink to="/tipos-envio">Tipos de Envio</RouterLink>.
         </p>
+        <div v-if="tipoSelecionado" class="card-inline configuracao-email-resumo">
+          <strong>Configuração herdada de “{{ tipoSelecionado.nome }}”</strong>
+          <span>
+            Corpo:
+            <strong>{{ corpoSelecionado?.nome || 'Padrão do sistema' }}</strong>
+            <template v-if="corpoEmailId"> (substituído manualmente)</template>
+          </span>
+          <span>
+            Assunto:
+            <strong>{{ nomeOrigemAssunto }}</strong>
+            — {{ assuntoPrevisto }}
+          </span>
+        </div>
       </div>
 
       <div class="flex gap-2">
@@ -548,6 +599,7 @@ onMounted(async () => {
         <p>Verifique o destinatário antes de enviar a apólice:</p>
         <p><strong>Cliente:</strong> {{ nomeDestino || '—' }}</p>
         <p class="confirm-email">{{ emailDestino }}</p>
+        <p><strong>Assunto:</strong> {{ assuntoPrevisto }}</p>
         <label style="display: flex; align-items: flex-start; gap: 0.5rem; font-weight: 500; margin-top: 1rem">
           <input v-model="confirmouEmail" type="checkbox" />
           Confirmo que o e-mail acima está correto
@@ -613,5 +665,17 @@ onMounted(async () => {
   border-radius: var(--radius);
   padding: 1rem;
   background: #fafafa;
+}
+.card-inline {
+  margin-top: 0.75rem;
+  padding: 0.85rem 1rem;
+  background: var(--terra-50, #f7faf9);
+  border: 1px solid var(--border, #e0d8d0);
+  border-radius: var(--radius, 8px);
+}
+.configuracao-email-resumo {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.9rem;
 }
 </style>

@@ -43,7 +43,7 @@ const passos = [
   {
     titulo: '1. Configure o básico',
     itens: [
-      'Configure os corpos de e-mail e associe cada um ao tipo de envio correspondente.',
+      'Configure corpos e assuntos de e-mail e associe ambos ao tipo de envio correspondente.',
       'Envie a capa Terra Fértil em Capa (vira capa.pdf junto com cada apólice).',
       'Cadastre assinaturas em Assinaturas e vincule ao FULL se necessário.',
     ],
@@ -60,11 +60,12 @@ const passos = [
     rotulo: 'Clientes',
   },
   {
-    titulo: '3. Tipos de envio e corpos de e-mail',
+    titulo: '3. Tipos, corpos e assuntos de e-mail',
     itens: [
       'Crie tipos (auto, moto, auto_casco) em Tipos de Envio — cada um ganha uma pasta no FULL.',
       'Em Corpos de E-mail, use os atalhos por modelo ou crie os seus.',
-      'Associe cada corpo ao tipo correspondente.',
+      'Em Assuntos, salve os títulos que aparecerão na caixa de entrada do cliente.',
+      'Associe corpo e assunto ao tipo correspondente; o FULL e o manual herdam os dois.',
     ],
     rota: '/tipos-envio',
     rotulo: 'Tipos de Envio',

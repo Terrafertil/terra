@@ -31,6 +31,7 @@ from .routers import (
     autos,
     tipos_envio,
     corpos_email,
+    assuntos_email,
     assinaturas,
     capa,
     backup,
@@ -132,6 +133,7 @@ app.include_router(clientes.router)
 app.include_router(autos.router)
 app.include_router(tipos_envio.router)
 app.include_router(corpos_email.router)
+app.include_router(assuntos_email.router)
 app.include_router(assinaturas.router)
 app.include_router(capa.router)
 app.include_router(backup.router)

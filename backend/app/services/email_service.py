@@ -14,6 +14,7 @@ import logging
 import smtplib
 import ssl
 import mimetypes
+import re
 import uuid
 from email.message import EmailMessage
 from email.utils import make_msgid
@@ -26,6 +27,41 @@ from ..config import settings
 
 log = logging.getLogger(__name__)
 _JINJA_ENV = SandboxedEnvironment(autoescape=False)
+
+
+def _adicionar_assinatura_ao_rodape(html: str, assinatura_cid: str | None) -> str:
+    """Inclui a imagem inline depois de todo o conteudo do corpo.
+
+    Corpos de e-mail personalizados normalmente contem apenas o texto que o
+    usuario editou. A assinatura, por outro lado, e uma configuracao do envio e
+    nao deve depender de o modelo conhecer ``assinatura_cid``. Se um modelo
+    legado ja posiciona o mesmo CID, preservamos essa posicao sem duplicar a
+    imagem.
+    """
+    if not assinatura_cid or f"cid:{assinatura_cid}".casefold() in html.casefold():
+        return html
+
+    assinatura_html = (
+        '<div class="assinatura-email" style="margin-top:16px;">'
+        f'<img src="cid:{assinatura_cid}" alt="Assinatura" '
+        'style="display:block;max-width:380px;height:auto;border:0;" />'
+        "</div>"
+    )
+
+    # Mantem um documento HTML completo valido; corpos que sao apenas um
+    # fragmento recebem a assinatura ao final, igualmente abaixo do texto.
+    fechamento_body = list(re.finditer(r"</body\s*>", html, flags=re.IGNORECASE))
+    if fechamento_body:
+        posicao = fechamento_body[-1].start()
+        return f"{html[:posicao]}{assinatura_html}\n{html[posicao:]}"
+
+    fechamento_html = list(re.finditer(r"</html\s*>", html, flags=re.IGNORECASE))
+    if fechamento_html:
+        posicao = fechamento_html[-1].start()
+        return f"{html[:posicao]}{assinatura_html}\n{html[posicao:]}"
+
+    separador = "\n" if html and not html.endswith("\n") else ""
+    return f"{html}{separador}{assinatura_html}"
 
 
 TEMPLATE_PADRAO = """
@@ -203,7 +239,8 @@ def renderizar_template(
     for ph in PLACEHOLDERS_DISPONIVEIS:
         ctx.setdefault(ph["chave"], "")
 
-    return _JINJA_ENV.from_string(tpl_str).render(**ctx)
+    html = _JINJA_ENV.from_string(tpl_str).render(**ctx)
+    return _adicionar_assinatura_ao_rodape(html, assinatura_cid)
 
 
 def formatar_assunto(numero_apolice: str | None, custom: str | None = None) -> str:
@@ -267,6 +304,7 @@ def enviar_email(
                 maintype=maintype,
                 subtype=subtype,
                 cid=f"<{assinatura_cid}>",
+                disposition="inline",
                 filename=ap.name,
             )
 

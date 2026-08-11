@@ -16,7 +16,6 @@ const ok = ref('')
 const form = reactive({
   nome: '',
   descricao: '',
-  assunto: '',
   html: '',
   ativo: true,
 })
@@ -39,7 +38,7 @@ const placeholdersAgrupados = computed(() => {
 })
 
 function vazio() {
-  return { nome: '', descricao: '', assunto: '', html: '', ativo: true }
+  return { nome: '', descricao: '', html: '', ativo: true }
 }
 
 async function carregar() {
@@ -65,7 +64,6 @@ function editar(row) {
   editandoId.value = row.id
   form.nome = row.nome
   form.descricao = row.descricao || ''
-  form.assunto = row.assunto || ''
   form.html = row.html || ''
   form.ativo = row.ativo
   window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -160,7 +158,6 @@ async function salvar() {
       await api.put(`/api/corpos-email/${editandoId.value}`, {
         nome: form.nome.trim(),
         descricao: form.descricao?.trim() || null,
-        assunto: form.assunto?.trim() || null,
         html: form.html,
         ativo: form.ativo,
       })
@@ -169,7 +166,6 @@ async function salvar() {
       await api.post('/api/corpos-email', {
         nome: form.nome.trim(),
         descricao: form.descricao?.trim() || null,
-        assunto: form.assunto?.trim() || null,
         html: form.html,
         ativo: form.ativo,
       })
@@ -202,6 +198,8 @@ onMounted(carregar)
     <p class="text-muted">
       Modelos HTML com variáveis <code v-pre>{{ nome }}</code>. Use os atalhos por modelo de apólice
       ou crie os seus — visíveis para toda a equipe.
+      O texto do assunto é cadastrado separadamente em <RouterLink to="/assuntos">Assuntos</RouterLink>
+      e vinculado ao tipo de envio.
       <RouterLink to="/tutorial">Ver tutorial</RouterLink>
     </p>
 
@@ -213,7 +211,6 @@ onMounted(carregar)
       <form @submit.prevent="salvar">
         <div class="row">
           <div><label>Nome *</label><input v-model="form.nome" maxlength="120" /></div>
-          <div><label>Assunto (opcional)</label><input v-model="form.assunto" maxlength="255" /></div>
         </div>
         <div class="mt-2">
           <label>Descrição</label>
@@ -370,7 +367,6 @@ onMounted(carregar)
         <thead>
           <tr>
             <th>Nome</th>
-            <th>Assunto</th>
             <th>Ativo</th>
             <th></th>
           </tr>
@@ -378,7 +374,6 @@ onMounted(carregar)
         <tbody>
           <tr v-for="r in lista" :key="r.id">
             <td>{{ r.nome }}</td>
-            <td>{{ r.assunto || '—' }}</td>
             <td>{{ r.ativo ? 'Sim' : 'Não' }}</td>
             <td>
               <button class="btn btn-ghost btn-sm" @click="editar(r)">Editar</button>

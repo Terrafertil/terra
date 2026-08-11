@@ -66,6 +66,17 @@ const passos = [
     ],
   },
   {
+    titulo: 'Assuntos de e-mail',
+    texto:
+      'O assunto é salvo separadamente do corpo. Assim, você pode reutilizá-lo e escolher corpo e assunto de forma independente para cada tipo de envio.',
+    rota: '/assuntos',
+    dicas: [
+      'Cadastre um nome interno e o texto que o cliente verá no campo Assunto.',
+      'Use {numero_apolice} para inserir o número da apólice automaticamente.',
+      'Depois vincule o assunto ao tipo em Tipos de Envio; o FULL e o manual herdam a escolha.',
+    ],
+  },
+  {
     titulo: 'Atalhos: variáveis automáticas',
     texto:
       'Ative «Atalhos visíveis» no editor. Na aba Variáveis, cada botão insere um campo que o sistema preenche no envio.',
@@ -146,12 +157,12 @@ const passos = [
     ],
   },
   {
-    titulo: 'Ligar corpo ao tipo de envio',
+    titulo: 'Ligar corpo e assunto ao tipo de envio',
     texto:
-      'Um corpo bonito só entra em ação quando está ligado ao tipo certo — senão o sistema usa o template padrão.',
+      'Corpo e assunto só entram em ação quando estão ligados ao tipo certo — senão o sistema usa os padrões globais.',
     rota: '/tipos-envio',
     dicas: [
-      'Em Tipos de Envio, edite o tipo (auto, moto…) e escolha o Corpo de e-mail.',
+      'Em Tipos de Envio, edite o tipo (auto, moto…) e escolha o Corpo e o Assunto do e-mail.',
       'O código do tipo deve bater com a pasta do FULL (ex.: pasta entrada/auto/).',
     ],
   },

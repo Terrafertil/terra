@@ -1,9 +1,12 @@
 <script setup>
 import { ref, onMounted, reactive, computed } from 'vue'
+import { RouterLink } from 'vue-router'
 import { api } from '../api'
+import { assuntoVinculado } from '../utils/assuntoEmail'
 
 const tipos = ref([])
 const corpos = ref([])
+const assuntos = ref([])
 const carregando = ref(false)
 const erro = ref('')
 const ok = ref('')
@@ -14,6 +17,7 @@ const form = reactive({
   descricao: '',
   na_fila_full: true,
   corpo_email_id: null,
+  assunto_email_id: null,
   ativo: true,
 })
 const editandoId = ref(null)
@@ -27,6 +31,7 @@ function vazio() {
     descricao: '',
     na_fila_full: true,
     corpo_email_id: null,
+    assunto_email_id: null,
     ativo: true,
   }
 }
@@ -35,12 +40,14 @@ async function carregar() {
   carregando.value = true
   erro.value = ''
   try {
-    const [t, c] = await Promise.all([
+    const [t, c, a] = await Promise.all([
       api.get('/api/tipos-envio'),
-      api.get('/api/corpos-email', { params: { ativo: true } }),
+      api.get('/api/corpos-email'),
+      api.get('/api/assuntos-email'),
     ])
     tipos.value = t.data
     corpos.value = c.data
+    assuntos.value = a.data
   } catch (e) {
     erro.value = e.response?.data?.detail || 'Erro ao carregar tipos de envio'
   } finally {
@@ -55,6 +62,7 @@ function editar(row) {
   form.descricao = row.descricao || ''
   form.na_fila_full = row.na_fila_full
   form.corpo_email_id = row.corpo_email_id
+  form.assunto_email_id = row.assunto_email_id
   form.ativo = row.ativo
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
@@ -77,6 +85,7 @@ async function salvar() {
     descricao: form.descricao?.trim() || null,
     na_fila_full: form.na_fila_full,
     corpo_email_id: form.corpo_email_id || null,
+    assunto_email_id: form.assunto_email_id || null,
     ativo: form.ativo,
     ordem: 0,
   }
@@ -88,6 +97,7 @@ async function salvar() {
         descricao: payload.descricao,
         na_fila_full: payload.na_fila_full,
         corpo_email_id: payload.corpo_email_id,
+        assunto_email_id: payload.assunto_email_id,
         ativo: payload.ativo,
       })
       ok.value = 'Tipo atualizado. A subpasta em ENTRADA segue o código (ex.: auto → pasta auto).'
@@ -123,6 +133,7 @@ onMounted(carregar)
       Cada tipo usa uma <strong>subpasta</strong> com o mesmo nome do código dentro da pasta de entrada do FULL
       (ex.: código <code>auto</code> → arquivos em <code>…/entrada/auto</code>). Associe um
       <strong>corpo de e-mail</strong> para o modo FULL usar o HTML correto em cada tipo.
+      Vincule também um <strong>assunto</strong>; tanto o FULL quanto o envio manual herdam essas duas escolhas.
     </p>
 
     <div v-if="erro" class="alert alert-err">{{ erro }}</div>
@@ -147,8 +158,25 @@ onMounted(carregar)
             <label>Corpo de e-mail (FULL)</label>
             <select v-model="form.corpo_email_id">
               <option :value="null">— nenhum —</option>
-              <option v-for="c in corpos" :key="c.id" :value="c.id">{{ c.nome }}</option>
+              <option v-for="c in corpos" :key="c.id" :value="c.id">
+                {{ c.nome }}{{ c.ativo ? '' : ' (inativo)' }}
+              </option>
             </select>
+          </div>
+          <div>
+            <label>Assunto do e-mail</label>
+            <select v-model="form.assunto_email_id">
+              <option :value="null">— padrão do sistema —</option>
+              <option v-for="a in assuntos" :key="a.id" :value="a.id">
+                {{ a.nome }}{{ a.ativo ? '' : ' (inativo)' }}
+              </option>
+            </select>
+            <small v-if="form.assunto_email_id" class="text-muted">
+              {{ assuntoVinculado(form, assuntos)?.assunto }}
+            </small>
+            <small v-else class="text-muted">
+              Crie e gerencie opções na aba <RouterLink to="/assuntos">Assuntos</RouterLink>.
+            </small>
           </div>
         </div>
         <div class="row">
@@ -183,6 +211,7 @@ onMounted(carregar)
             <th>Código</th>
             <th>Nome</th>
             <th>Corpo e-mail</th>
+            <th>Assunto</th>
             <th>Fila FULL</th>
             <th>Pasta</th>
             <th></th>
@@ -195,6 +224,14 @@ onMounted(carregar)
             <td>
               <span v-if="t.corpo_email_id">{{ corpos.find((c) => c.id === t.corpo_email_id)?.nome || '#' + t.corpo_email_id }}</span>
               <span v-else class="text-muted">—</span>
+            </td>
+            <td>
+              <template v-if="assuntoVinculado(t, assuntos)">
+                <strong>{{ assuntoVinculado(t, assuntos).nome }}</strong>
+                <br />
+                <small class="text-muted">{{ assuntoVinculado(t, assuntos).assunto }}</small>
+              </template>
+              <span v-else class="text-muted">Padrão do sistema</span>
             </td>
             <td>{{ t.na_fila_full ? 'Sim' : 'Não' }}</td>
             <td><small class="text-muted">{{ t.pasta }}</small></td>

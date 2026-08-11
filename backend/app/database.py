@@ -61,6 +61,7 @@ def init_db() -> None:
     from . import models  # noqa: F401  (garante registro dos models)
 
     Base.metadata.create_all(bind=engine)
+    _migrate_assuntos_email()
     _migrate_runtime_config_columns()
     _migrate_envios_columns()
     _migrate_avulso_para_manual()
@@ -73,6 +74,72 @@ def init_db() -> None:
     _migrate_envios_encryption_data()
     _seed_diretor_conta()
     _run_alembic_migrations()
+
+
+def _migrate_assuntos_email() -> None:
+    """Adiciona o vinculo de assunto e importa assuntos legados dos corpos."""
+    insp = inspect(engine)
+    if "tipos_envio" not in insp.get_table_names():
+        return
+    colunas = {c["name"] for c in insp.get_columns("tipos_envio")}
+    if "assunto_email_id" not in colunas:
+        with engine.begin() as conn:
+            conn.execute(
+                text("ALTER TABLE tipos_envio ADD COLUMN assunto_email_id INTEGER")
+            )
+
+    from . import models
+
+    s = sessionmaker(bind=engine, future=True)()
+    try:
+        tipos = (
+            s.query(models.TipoEnvio)
+            .join(
+                models.CorpoEmail,
+                models.TipoEnvio.corpo_email_id == models.CorpoEmail.id,
+            )
+            .filter(models.TipoEnvio.assunto_email_id.is_(None))
+            .all()
+        )
+        por_corpo: dict[int, models.AssuntoEmail] = {}
+        for tipo in tipos:
+            corpo = tipo.corpo_email
+            texto = (corpo.assunto or "").strip() if corpo else ""
+            if not corpo or not texto:
+                continue
+            assunto = por_corpo.get(corpo.id)
+            if assunto is None:
+                nome_base = f"Assunto - {corpo.nome}"[:120]
+                nome = nome_base
+                sufixo = 2
+                existente = s.query(models.AssuntoEmail).filter(
+                    models.AssuntoEmail.nome == nome
+                ).first()
+                if existente and (existente.assunto or "").strip() == texto:
+                    assunto = existente
+                while assunto is None and existente:
+                    marcador = f" ({sufixo})"
+                    nome = f"{nome_base[:120 - len(marcador)]}{marcador}"
+                    sufixo += 1
+                    existente = s.query(models.AssuntoEmail).filter(
+                        models.AssuntoEmail.nome == nome
+                    ).first()
+                    if existente and (existente.assunto or "").strip() == texto:
+                        assunto = existente
+                if assunto is None:
+                    assunto = models.AssuntoEmail(
+                        nome=nome,
+                        descricao=f"Importado do corpo de e-mail {corpo.nome}"[:255],
+                        assunto=texto,
+                        ativo=corpo.ativo,
+                    )
+                    s.add(assunto)
+                    s.flush()
+                por_corpo[corpo.id] = assunto
+            tipo.assunto_email_id = assunto.id
+        s.commit()
+    finally:
+        s.close()
 
 
 def _run_alembic_migrations() -> None:

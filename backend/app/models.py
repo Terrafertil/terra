@@ -75,6 +75,24 @@ class CorpoEmail(Base):
     tipos: Mapped[list["TipoEnvio"]] = relationship(back_populates="corpo_email")
 
 
+class AssuntoEmail(Base):
+    """Assunto reutilizavel, associado ao tipo de envio."""
+
+    __tablename__ = "assuntos_email"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    nome: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    descricao: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    assunto: Mapped[str] = mapped_column(String(500), nullable=False)
+    ativo: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    tipos: Mapped[list["TipoEnvio"]] = relationship(back_populates="assunto_email")
+
+
 class TipoEnvio(Base):
     """Tipo de envio (auto, residencial, teste...). Cria sub-pasta de mesmo nome
     em FULL_WATCH_FOLDER. Usa um corpo de e-mail e tem ordem para o FULL."""
@@ -89,6 +107,9 @@ class TipoEnvio(Base):
     corpo_email_id: Mapped[int | None] = mapped_column(
         ForeignKey("corpos_email.id"), nullable=True
     )
+    assunto_email_id: Mapped[int | None] = mapped_column(
+        ForeignKey("assuntos_email.id"), nullable=True
+    )
     ativo: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -96,6 +117,7 @@ class TipoEnvio(Base):
     )
 
     corpo_email: Mapped["CorpoEmail | None"] = relationship(back_populates="tipos")
+    assunto_email: Mapped["AssuntoEmail | None"] = relationship(back_populates="tipos")
 
 
 class Assinatura(Base):

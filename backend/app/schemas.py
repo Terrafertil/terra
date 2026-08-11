@@ -84,6 +84,7 @@ class TipoEnvioBase(BaseModel):
     ordem: int = 0
     na_fila_full: bool = True
     corpo_email_id: int | None = None
+    assunto_email_id: int | None = None
     ativo: bool = True
 
 
@@ -98,6 +99,7 @@ class TipoEnvioUpdate(BaseModel):
     ordem: int | None = None
     na_fila_full: bool | None = None
     corpo_email_id: int | None = None
+    assunto_email_id: int | None = None
     ativo: bool | None = None
 
 
@@ -112,6 +114,34 @@ class TipoEnvioOut(TipoEnvioBase):
 class TipoEnvioOrdemPatch(BaseModel):
     """Payload para reordenar lista (drag&drop): lista de codigos na ordem."""
     ordem: list[str]
+
+
+# ========= Assunto de e-mail =========
+class AssuntoEmailBase(BaseModel):
+    nome: str = Field(min_length=1, max_length=120)
+    descricao: str | None = Field(None, max_length=255)
+    assunto: str = Field(min_length=1, max_length=500, pattern=r"^[^\r\n]+$")
+    ativo: bool = True
+
+
+class AssuntoEmailCreate(AssuntoEmailBase):
+    pass
+
+
+class AssuntoEmailUpdate(BaseModel):
+    nome: str | None = Field(None, min_length=1, max_length=120)
+    descricao: str | None = Field(None, max_length=255)
+    assunto: str | None = Field(
+        None, min_length=1, max_length=500, pattern=r"^[^\r\n]+$"
+    )
+    ativo: bool | None = None
+
+
+class AssuntoEmailOut(AssuntoEmailBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ========= Corpo de e-mail =========

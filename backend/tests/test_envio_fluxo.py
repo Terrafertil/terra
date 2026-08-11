@@ -72,7 +72,15 @@ class EnvioFluxoTests(unittest.TestCase):
             patch.object(envio_service, "_resolver_assinatura", return_value=None)
         )
         stack.enter_context(
-            patch.object(envio_service.email_service, "formatar_assunto", return_value="Assunto")
+            patch.object(
+                envio_service.email_service,
+                "formatar_assunto",
+                side_effect=lambda numero_apolice, custom=None: (
+                    custom.format(numero_apolice=numero_apolice or "")
+                    if custom
+                    else "Assunto"
+                ),
+            )
         )
         stack.enter_context(
             patch.object(
@@ -97,6 +105,42 @@ class EnvioFluxoTests(unittest.TestCase):
             smtp.side_effect = smtp_side_effect
         return stack, backup, smtp
 
+    def test_demonstracao_mostra_assinatura_abaixo_do_corpo(self):
+        assinatura_path = self.temp_dir / "assinatura.png"
+        assinatura_path.write_bytes(b"\x89PNG\r\n\x1a\nimagem")
+        corpo = models.CorpoEmail(
+            nome="Corpo com assinatura",
+            assunto="Assunto",
+            html="<p>Primeira linha</p><p>Ultima linha</p>",
+        )
+        assinatura = models.Assinatura(
+            nome="Assinatura teste",
+            arquivo=assinatura_path.name,
+            ativo=True,
+        )
+        self.db.add_all([corpo, assinatura])
+        self.db.commit()
+
+        with (
+            patch.object(envio_service.settings, "assinaturas_folder", str(self.temp_dir)),
+            patch.object(
+                envio_service.email_service,
+                "gerar_cid",
+                return_value="assinatura-preview@envio",
+            ),
+        ):
+            demonstracao = envio_service.renderizar_demonstracao(
+                self.db,
+                cliente=self.cliente,
+                assinatura_id=assinatura.id,
+                corpo_email_id=corpo.id,
+            )
+
+        html = demonstracao["html"]
+        self.assertNotIn("cid:assinatura-preview@envio", html)
+        self.assertIn("data:image/png;base64,", html)
+        self.assertGreater(html.index("data:image/png;base64,"), html.index("Ultima linha"))
+
     def test_manual_repetido_dispara_duas_vezes_e_nao_tem_chave(self):
         stack, _backup, smtp = self._patch_fluxo()
         with stack:
@@ -119,6 +163,101 @@ class EnvioFluxoTests(unittest.TestCase):
         self.assertEqual(smtp.call_count, 2)
         self.assertFalse(primeiro.deduplicado)
         self.assertFalse(segundo.deduplicado)
+
+    def test_manual_e_full_herdam_assunto_salvo_do_tipo(self):
+        corpo = models.CorpoEmail(
+            nome="Corpo auto",
+            assunto="Assunto legado {numero_apolice}",
+            html="<p>Corpo</p>",
+        )
+        assunto = models.AssuntoEmail(
+            nome="Assunto auto",
+            assunto="Apolice Auto {numero_apolice}",
+        )
+        self.db.add_all([corpo, assunto])
+        self.db.flush()
+        tipo = models.TipoEnvio(
+            codigo="auto",
+            nome="Auto",
+            corpo_email_id=corpo.id,
+            assunto_email_id=assunto.id,
+        )
+        self.db.add(tipo)
+        self.db.commit()
+
+        stack, _backup, smtp = self._patch_fluxo()
+        with stack:
+            envio_service.processar_envio(
+                self.db,
+                cliente=self.cliente,
+                caminho_pdf=self.pdf,
+                tipo_envio="MANUAL",
+                tipo_codigo="auto",
+                numero_apolice="123",
+            )
+            envio_service.processar_envio(
+                self.db,
+                cliente=self.cliente,
+                caminho_pdf=self.pdf,
+                tipo_envio="FULL",
+                tipo_codigo="auto",
+                numero_apolice="456",
+            )
+
+        assuntos = [call.kwargs["assunto"] for call in smtp.call_args_list]
+        self.assertEqual(assuntos, ["Apolice Auto 123", "Apolice Auto 456"])
+
+    def test_assunto_explicito_prevalece_e_corpo_legado_e_fallback(self):
+        corpo = models.CorpoEmail(
+            nome="Corpo legado",
+            assunto="Legado {numero_apolice}",
+            html="<p>Corpo</p>",
+        )
+        self.db.add(corpo)
+        self.db.flush()
+        tipo = models.TipoEnvio(
+            codigo="residencial",
+            nome="Residencial",
+            corpo_email_id=corpo.id,
+        )
+        self.db.add(tipo)
+        self.db.commit()
+
+        demo = envio_service.renderizar_demonstracao(
+            self.db,
+            cliente=self.cliente,
+            numero_apolice="789",
+            tipo_codigo="residencial",
+        )
+        self.assertEqual(demo["assunto"], "Legado 789")
+
+        stack, _backup, smtp = self._patch_fluxo()
+        with stack:
+            envio_service.processar_envio(
+                self.db,
+                cliente=self.cliente,
+                caminho_pdf=self.pdf,
+                tipo_envio="MANUAL",
+                tipo_codigo="residencial",
+                numero_apolice="789",
+                assunto_customizado="Escolhido pelo operador",
+            )
+        self.assertEqual(
+            smtp.call_args.kwargs["assunto"], "Escolhido pelo operador"
+        )
+
+        stack, _backup, smtp = self._patch_fluxo()
+        with stack:
+            envio_service.processar_envio(
+                self.db,
+                cliente=self.cliente,
+                caminho_pdf=self.pdf,
+                tipo_envio="MANUAL",
+                tipo_codigo="residencial",
+                numero_apolice="789",
+                assunto_customizado="   ",
+            )
+        self.assertEqual(smtp.call_args.kwargs["assunto"], "Legado 789")
 
     def test_lgpd_remove_toda_a_cadeia_de_reenvio(self):
         origem = models.Envio(

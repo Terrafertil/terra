@@ -27,6 +27,7 @@ const routes = [
       { path: 'full-config',name: 'fullConfig', component: () => import('../views/FullConfig.vue'), meta: { requiresAdmin: true } },
       { path: 'tipos-envio',name: 'tiposEnvio', component: () => import('../views/TiposEnvio.vue'), meta: { requiresAdmin: true } },
       { path: 'corpos-email', name: 'corposEmail', component: () => import('../views/CorposEmail.vue'), meta: { requiresAdmin: true } },
+      { path: 'assuntos', name: 'assuntosEmail', component: () => import('../views/AssuntosEmail.vue'), meta: { requiresAdmin: true } },
       { path: 'assinaturas', name: 'assinaturas', component: () => import('../views/Assinaturas.vue'), meta: { requiresAdmin: true } },
       { path: 'capa',       name: 'capa',       component: () => import('../views/Capa.vue'), meta: { requiresAdmin: true } },
       {

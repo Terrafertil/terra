@@ -24,6 +24,7 @@ def _to_out(t: models.TipoEnvio) -> dict:
         "ordem": t.ordem,
         "na_fila_full": t.na_fila_full,
         "corpo_email_id": t.corpo_email_id,
+        "assunto_email_id": t.assunto_email_id,
         "ativo": t.ativo,
         "created_at": t.created_at,
         "updated_at": t.updated_at,
@@ -63,6 +64,9 @@ def criar(
     if payload.corpo_email_id:
         if not db.get(models.CorpoEmail, payload.corpo_email_id):
             raise HTTPException(400, "corpo_email_id inválido")
+    if payload.assunto_email_id:
+        if not db.get(models.AssuntoEmail, payload.assunto_email_id):
+            raise HTTPException(400, "assunto_email_id invalido")
     if payload.ordem == 0:
         # próxima ordem
         max_ordem = db.query(models.TipoEnvio).count()
@@ -101,6 +105,9 @@ def atualizar(
     if "corpo_email_id" in dados and dados["corpo_email_id"]:
         if not db.get(models.CorpoEmail, dados["corpo_email_id"]):
             raise HTTPException(400, "corpo_email_id inválido")
+    if "assunto_email_id" in dados and dados["assunto_email_id"]:
+        if not db.get(models.AssuntoEmail, dados["assunto_email_id"]):
+            raise HTTPException(400, "assunto_email_id invalido")
     codigo_antigo = t.codigo
     for k, v in dados.items():
         setattr(t, k, v)
