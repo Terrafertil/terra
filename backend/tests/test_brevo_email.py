@@ -85,6 +85,45 @@ class BrevoSettingsTests(unittest.TestCase):
 
 
 class BrevoEmailTests(unittest.TestCase):
+    def test_novas_variaveis_funcionam_no_assunto_e_corpo_com_autoescape(self):
+        contexto = {
+            "forma_pagamento": "Cartao",
+            "parcelamento": "12 vezes",
+            "numero_proposta": "PROP-42",
+            "item_segurado": "<Trator>",
+        }
+
+        assunto = email_service.formatar_assunto(
+            None,
+            custom=(
+                "{numero_proposta} - {{ forma_pagamento }} - "
+                "{parcelamento} - {item_segurado}"
+            ),
+            contexto=contexto,
+        )
+        corpo = email_service.renderizar_template(
+            template_html=(
+                "<p>{{ numero_proposta }} | {{ forma_pagamento }} | "
+                "{{ parcelamento }} | {{ item_segurado }}</p>"
+            ),
+            contexto=contexto,
+        )
+
+        self.assertEqual(
+            assunto,
+            "PROP-42 - Cartao - 12 vezes - <Trator>",
+        )
+        self.assertIn(
+            "<p>PROP-42 | Cartao | 12 vezes | &lt;Trator&gt;</p>",
+            corpo,
+        )
+
+    def test_corpo_preserva_tres_linhas_em_branco(self):
+        template = "Primeira linha<br><br><br><br>Quinta linha"
+        rendered = email_service.renderizar_template(template_html=template)
+
+        self.assertIn(template, rendered)
+
     def test_custom_body_receives_signature_at_the_bottom(self):
         cid = "assinatura-teste@envio"
 

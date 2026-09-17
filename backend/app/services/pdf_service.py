@@ -20,7 +20,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import pdfplumber
 from pypdf import PdfReader, PdfWriter
@@ -32,6 +32,12 @@ class PdfRequerSenhaError(ValueError):
 
 class PdfSenhaInvalidaError(ValueError):
     """Senha informada não desbloqueia o PDF."""
+
+
+def normalizar_senha_pdf(senha: str | None) -> str | None:
+    """Remove todo whitespace copiado junto da senha de um PDF."""
+    normalizada = re.sub(r"\s+", "", senha or "")
+    return normalizada or None
 
 
 # ====== Regex genéricos ======
@@ -197,7 +203,7 @@ def ler_senha_arquivo_auxiliar(caminho_pdf: Path) -> str | None:
     for p in candidatos:
         if p.is_file():
             try:
-                linha = p.read_text(encoding="utf-8").strip()
+                linha = normalizar_senha_pdf(p.read_text(encoding="utf-8"))
                 if linha:
                     return linha
             except OSError:
@@ -216,7 +222,7 @@ def _ler_texto_pdf(
     caminho: Path, senha: str | None = None
 ) -> tuple[str, bool, bool]:
     """Retorna (texto, requer_senha, senha_invalida)."""
-    senha = (senha or "").strip() or None
+    senha = normalizar_senha_pdf(senha)
     if not senha:
         senha = ler_senha_arquivo_auxiliar(caminho)
 
@@ -253,7 +259,7 @@ def garantir_pdf_desbloqueado(
     if not reader.is_encrypted:
         return caminho, None
 
-    senha_efetiva = (senha or "").strip() or ler_senha_arquivo_auxiliar(caminho)
+    senha_efetiva = normalizar_senha_pdf(senha) or ler_senha_arquivo_auxiliar(caminho)
     if not senha_efetiva:
         raise PdfRequerSenhaError(
             "PDF protegido por senha. Informe a senha no envio manual ou crie um ficheiro "
@@ -265,8 +271,15 @@ def garantir_pdf_desbloqueado(
     tmp = Path(tempfile.gettempdir()) / f"pdf_desbloqueado_{uuid.uuid4().hex}.pdf"
     writer = PdfWriter()
     writer.append(reader, import_outline=False)
-    with tmp.open("wb") as fh:
-        writer.write(fh)
+    try:
+        with tmp.open("wb") as fh:
+            writer.write(fh)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
     return tmp, tmp
 
 
@@ -651,12 +664,81 @@ def formatar_cnpj(doc: str) -> str:
 def _reader_desbloqueado(pdf_path: Path, senha: str | None = None) -> PdfReader:
     r = PdfReader(str(pdf_path), strict=False)
     if r.is_encrypted:
-        senha_efetiva = (senha or "").strip() or ler_senha_arquivo_auxiliar(pdf_path)
+        senha_efetiva = normalizar_senha_pdf(senha)
+        if not senha_efetiva:
+            senha_efetiva = normalizar_senha_pdf(
+                ler_senha_arquivo_auxiliar(pdf_path)
+            )
         if not senha_efetiva:
             raise PdfRequerSenhaError(f"PDF protegido por senha: {pdf_path.name}")
         if r.decrypt(senha_efetiva) == 0:
             raise PdfSenhaInvalidaError("Senha do PDF incorreta.")
     return r
+
+
+def mesclar_pdfs(
+    arquivos: Sequence[str | Path],
+    saida: str | Path,
+    *,
+    senhas: Sequence[str | None] | None = None,
+) -> Path:
+    """Concatena N PDFs exatamente na ordem recebida e grava de forma atômica."""
+    caminhos = [Path(arquivo) for arquivo in arquivos]
+    if not caminhos:
+        raise ValueError("Informe ao menos um PDF para a junção")
+    for caminho in caminhos:
+        if not caminho.is_file():
+            raise FileNotFoundError(caminho)
+
+    if senhas is None:
+        senhas_lista: list[str | None] = [None] * len(caminhos)
+    else:
+        senhas_lista = list(senhas)
+        if len(senhas_lista) != len(caminhos):
+            raise ValueError("A lista de senhas deve acompanhar a lista de PDFs")
+
+    saida = Path(saida)
+    saida_resolvida = saida.resolve()
+    if any(caminho.resolve() == saida_resolvida for caminho in caminhos):
+        raise ValueError("O PDF de saída não pode sobrescrever uma das entradas")
+
+    readers: list[PdfReader] = []
+    paginas_por_arquivo: list[int] = []
+    for caminho, senha in zip(caminhos, senhas_lista):
+        reader = _reader_desbloqueado(caminho, senha)
+        readers.append(reader)
+        paginas_por_arquivo.append(len(reader.pages))
+
+    n_esperado = sum(paginas_por_arquivo)
+    if n_esperado <= 0:
+        raise ValueError("Os PDFs informados não possuem páginas")
+
+    writer = PdfWriter()
+    for reader in readers:
+        writer.append(reader, import_outline=False)
+
+    saida.parent.mkdir(parents=True, exist_ok=True)
+    temporario = saida.with_name(f".{saida.name}.{uuid.uuid4().hex}.part")
+    try:
+        with temporario.open("xb") as handle:
+            writer.write(handle)
+
+        verificador = PdfReader(str(temporario), strict=False)
+        n_saida = len(verificador.pages)
+        if n_saida != n_esperado:
+            raise ValueError(
+                "Junção incompleta: esperadas "
+                f"{n_esperado} páginas ({paginas_por_arquivo}), obtidas {n_saida}."
+            )
+        temporario.replace(saida)
+    except Exception:
+        temporario.unlink(missing_ok=True)
+        raise
+    return saida
+
+
+# Alias explícito para chamadores que queiram realçar a garantia de ordem.
+mesclar_pdfs_ordenados = mesclar_pdfs
 
 
 def mesclar_capa_e_apolice(
@@ -667,31 +749,8 @@ def mesclar_capa_e_apolice(
     Usa ``PdfWriter.append(reader)`` (com ``import_outline=False``), mais robusto com
     PDFs de seguradoras/Word do que ``append_pages_from_reader``, que falha em vários casos.
     """
-    capa = Path(capa)
-    apolice = Path(apolice)
-    saida = Path(saida)
-    if not capa.is_file():
-        raise FileNotFoundError(capa)
-    if not apolice.is_file():
-        raise FileNotFoundError(apolice)
-
-    r_capa = _reader_desbloqueado(capa)
-    r_apol = _reader_desbloqueado(apolice, senha_apolice)
-    n_esperado = len(r_capa.pages) + len(r_apol.pages)
-
-    writer = PdfWriter()
-    writer.append(r_capa, import_outline=False)
-    writer.append(r_apol, import_outline=False)
-
-    saida.parent.mkdir(parents=True, exist_ok=True)
-    with saida.open("wb") as fh:
-        writer.write(fh)
-
-    ver = PdfReader(str(saida), strict=False)
-    n_saida = len(ver.pages)
-    if n_saida != n_esperado:
-        raise ValueError(
-            f"Junção incompleta: esperadas {n_esperado} páginas (capa {len(r_capa.pages)} + "
-            f"apólice {len(r_apol.pages)}), obtidas {n_saida}."
-        )
-    return saida
+    return mesclar_pdfs(
+        [capa, apolice],
+        saida,
+        senhas=[None, senha_apolice],
+    )

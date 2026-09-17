@@ -3,10 +3,12 @@ import { ref, onMounted, reactive, computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import { api } from '../api'
 import { assuntoVinculado } from '../utils/assuntoEmail'
+import CapaOrderSelector from '../components/CapaOrderSelector.vue'
 
 const tipos = ref([])
 const corpos = ref([])
 const assuntos = ref([])
+const capas = ref([])
 const carregando = ref(false)
 const erro = ref('')
 const ok = ref('')
@@ -18,6 +20,8 @@ const form = reactive({
   na_fila_full: true,
   corpo_email_id: null,
   assunto_email_id: null,
+  capas_iniciais_ids: [],
+  capas_finais_ids: [],
   ativo: true,
 })
 const editandoId = ref(null)
@@ -32,6 +36,8 @@ function vazio() {
     na_fila_full: true,
     corpo_email_id: null,
     assunto_email_id: null,
+    capas_iniciais_ids: [],
+    capas_finais_ids: [],
     ativo: true,
   }
 }
@@ -40,14 +46,16 @@ async function carregar() {
   carregando.value = true
   erro.value = ''
   try {
-    const [t, c, a] = await Promise.all([
+    const [t, c, a, cp] = await Promise.all([
       api.get('/api/tipos-envio'),
       api.get('/api/corpos-email'),
       api.get('/api/assuntos-email'),
+      api.get('/api/capas', { params: { ativo: true } }),
     ])
     tipos.value = t.data
     corpos.value = c.data
     assuntos.value = a.data
+    capas.value = cp.data
   } catch (e) {
     erro.value = e.response?.data?.detail || 'Erro ao carregar tipos de envio'
   } finally {
@@ -63,6 +71,8 @@ function editar(row) {
   form.na_fila_full = row.na_fila_full
   form.corpo_email_id = row.corpo_email_id
   form.assunto_email_id = row.assunto_email_id
+  form.capas_iniciais_ids = [...(row.capas_iniciais_ids || [])]
+  form.capas_finais_ids = [...(row.capas_finais_ids || [])]
   form.ativo = row.ativo
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
@@ -86,6 +96,8 @@ async function salvar() {
     na_fila_full: form.na_fila_full,
     corpo_email_id: form.corpo_email_id || null,
     assunto_email_id: form.assunto_email_id || null,
+    capas_iniciais_ids: [...form.capas_iniciais_ids],
+    capas_finais_ids: [...form.capas_finais_ids],
     ativo: form.ativo,
     ordem: 0,
   }
@@ -98,6 +110,8 @@ async function salvar() {
         na_fila_full: payload.na_fila_full,
         corpo_email_id: payload.corpo_email_id,
         assunto_email_id: payload.assunto_email_id,
+        capas_iniciais_ids: payload.capas_iniciais_ids,
+        capas_finais_ids: payload.capas_finais_ids,
         ativo: payload.ativo,
       })
       ok.value = 'Tipo atualizado. A subpasta em ENTRADA segue o código (ex.: auto → pasta auto).'
@@ -179,6 +193,22 @@ onMounted(carregar)
             </small>
           </div>
         </div>
+        <div class="capas-padrao-grid mt-2">
+          <CapaOrderSelector
+            v-model="form.capas_iniciais_ids"
+            :capas="capas"
+            label="Capas antes da apólice (padrão do FULL)"
+          />
+          <CapaOrderSelector
+            v-model="form.capas_finais_ids"
+            :capas="capas"
+            label="Capas depois da apólice (padrão do FULL)"
+          />
+        </div>
+        <small class="text-muted">
+          O envio manual começa com este padrão e permite alterá-lo para cada apólice.
+          Gerencie os PDFs em <RouterLink to="/capa">Capas</RouterLink>.
+        </small>
         <div class="row">
           <div class="flex gap-2 items-center">
             <label class="m-0"><input type="checkbox" v-model="form.na_fila_full" /> Na fila do FULL (padrão)</label>
@@ -212,6 +242,7 @@ onMounted(carregar)
             <th>Nome</th>
             <th>Corpo e-mail</th>
             <th>Assunto</th>
+            <th>Capas</th>
             <th>Fila FULL</th>
             <th>Pasta</th>
             <th></th>
@@ -233,6 +264,10 @@ onMounted(carregar)
               </template>
               <span v-else class="text-muted">Padrão do sistema</span>
             </td>
+            <td>
+              {{ (t.capas_iniciais_ids || []).length }} antes ·
+              {{ (t.capas_finais_ids || []).length }} depois
+            </td>
             <td>{{ t.na_fila_full ? 'Sim' : 'Não' }}</td>
             <td><small class="text-muted">{{ t.pasta }}</small></td>
             <td>
@@ -246,3 +281,18 @@ onMounted(carregar)
     </div>
   </div>
 </template>
+
+<style scoped>
+.capas-padrao-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  padding: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--terra-50);
+}
+@media (max-width: 900px) {
+  .capas-padrao-grid { grid-template-columns: 1fr; }
+}
+</style>

@@ -16,4 +16,13 @@ describe('sanitizeEmailHtml', () => {
     const result = sanitizeEmailHtml('<strong>OlÃ¡</strong><br><em>Cliente</em>')
     expect(result).toBe('<strong>OlÃ¡</strong><br><em>Cliente</em>')
   })
+
+  it('preserva estrutura e estilos de documentos legados completos', () => {
+    const html = '<html><head><style>p{color:red}</style></head><body><p>Olá</p></body></html>'
+    const result = sanitizeEmailHtml(html, { wholeDocument: true })
+
+    expect(result).toContain('<html>')
+    expect(result).toContain('<head><style>p{color:red}</style></head>')
+    expect(result).toContain('<body><p>Olá</p></body>')
+  })
 })

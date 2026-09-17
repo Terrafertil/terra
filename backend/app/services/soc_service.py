@@ -12,7 +12,15 @@ from . import data_crypto_service as crypto
 
 log = logging.getLogger(__name__)
 
-_SENSITIVE = ("nome", "email", "cpf", "cnpj", "telefone", "observacoes")
+_SENSITIVE = (
+    "nome",
+    "email",
+    "cpf",
+    "cnpj",
+    "telefone",
+    "observacoes",
+    "destinatarios_adicionais_json",
+)
 
 SOC_BLOCK_MSG = (
     "Modo SOC ativo: envios e alterações bloqueados. "

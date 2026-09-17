@@ -1,7 +1,9 @@
 <script setup>
-import { ref, onMounted, reactive, computed, nextTick } from 'vue'
+import { ref, onMounted, reactive, computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import { api } from '../api'
+import RichEmailEditor from '../components/RichEmailEditor.vue'
+import { sanitizeEmailHtml } from '../utils/sanitizeEmail'
 
 const lista = ref([])
 const placeholders = ref([])
@@ -20,7 +22,7 @@ const form = reactive({
   ativo: true,
 })
 const editandoId = ref(null)
-const textareaRef = ref(null)
+const editorRef = ref(null)
 
 const novoAtalho = reactive({ nome: '', descricao: '', html: '' })
 const salvandoAtalhos = ref(false)
@@ -79,25 +81,14 @@ function textoPlaceholder(chave) {
 }
 
 function inserirHtml(texto) {
-  const token = texto
-  const el = textareaRef.value
-  if (el && typeof el.selectionStart === 'number') {
-    const start = el.selectionStart
-    const end = el.selectionEnd
-    const v = form.html
-    form.html = v.slice(0, start) + token + v.slice(end)
-    nextTick(() => {
-      el.focus()
-      const pos = start + token.length
-      el.setSelectionRange(pos, pos)
-    })
-  } else {
-    form.html += token
-  }
+  if (editorRef.value) editorRef.value.insertHtml(texto)
+  else form.html += texto
 }
 
 function inserirNoHtml(chave) {
-  inserirHtml(`{{ ${chave} }}`)
+  const token = `{{ ${chave} }}`
+  if (editorRef.value) editorRef.value.insertText(token)
+  else form.html += token
 }
 
 function aplicarModelo(m) {
@@ -153,12 +144,14 @@ async function salvar() {
     erro.value = 'Nome é obrigatório'
     return
   }
+  const documentoCompleto = /^\s*(?:<!doctype\s+html[^>]*>\s*)?<html\b/i.test(form.html)
+  const htmlSeguro = sanitizeEmailHtml(form.html, { wholeDocument: documentoCompleto })
   try {
     if (editandoId.value) {
       await api.put(`/api/corpos-email/${editandoId.value}`, {
         nome: form.nome.trim(),
         descricao: form.descricao?.trim() || null,
-        html: form.html,
+        html: htmlSeguro,
         ativo: form.ativo,
       })
       ok.value = 'Corpo de e-mail atualizado'
@@ -166,7 +159,7 @@ async function salvar() {
       await api.post('/api/corpos-email', {
         nome: form.nome.trim(),
         descricao: form.descricao?.trim() || null,
-        html: form.html,
+        html: htmlSeguro,
         ativo: form.ativo,
       })
       ok.value = 'Corpo criado. Associe-o a um tipo de envio para o FULL usar automaticamente.'
@@ -218,14 +211,12 @@ onMounted(carregar)
         </div>
 
         <div class="mt-2">
-          <label>HTML</label>
-          <textarea
-            ref="textareaRef"
+          <label>Corpo do e-mail</label>
+          <RichEmailEditor
+            ref="editorRef"
             v-model="form.html"
-            rows="16"
-            class="html-editor"
-            placeholder="Ex.: <p>Prezado(a) …</p>"
-          ></textarea>
+            placeholder="Escreva o e-mail como ele deverá chegar ao destinatário…"
+          />
         </div>
 
         <div class="corpo-vars-toolbar">
@@ -406,12 +397,6 @@ onMounted(carregar)
 .ph-grupo-titulo { font-size: 0.82rem; color: var(--tf-preto-musgo, #003c35); }
 .ph-botoes { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.35rem; }
 .ph-btn { text-align: left; }
-.html-editor {
-  width: 100%;
-  font-family: ui-monospace, monospace;
-  font-size: 0.88rem;
-  line-height: 1.45;
-}
 .atalhos-tabs {
   display: flex;
   flex-wrap: wrap;

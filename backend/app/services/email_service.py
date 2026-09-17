@@ -24,9 +24,10 @@ from typing import Iterable, Mapping, Any
 from jinja2.sandbox import SandboxedEnvironment
 
 from ..config import settings
+from . import destinatarios_service
 
 log = logging.getLogger(__name__)
-_JINJA_ENV = SandboxedEnvironment(autoescape=False)
+_JINJA_ENV = SandboxedEnvironment(autoescape=True)
 
 
 def _adicionar_assinatura_ao_rodape(html: str, assinatura_cid: str | None) -> str:
@@ -95,6 +96,11 @@ PLACEHOLDERS_DISPONIVEIS = [
     {"chave": "seguradora", "label": "Seguradora", "grupo": "Apólice"},
     {"chave": "produto", "label": "Produto (auto, moto, casco…)", "grupo": "Apólice"},
     {"chave": "layout_apolice", "label": "Layout detectado no PDF", "grupo": "Apólice"},
+    # Proposta / pagamento
+    {"chave": "forma_pagamento", "label": "Forma de pagamento", "grupo": "Proposta"},
+    {"chave": "parcelamento", "label": "Parcelamento (1 a 12 vezes)", "grupo": "Proposta"},
+    {"chave": "numero_proposta", "label": "Numero da proposta", "grupo": "Proposta"},
+    {"chave": "item_segurado", "label": "Item segurado", "grupo": "Proposta"},
     # Auto
     {"chave": "placa", "label": "Placa do veículo", "grupo": "Auto"},
     {"chave": "marca", "label": "Marca", "grupo": "Auto"},
@@ -243,17 +249,34 @@ def renderizar_template(
     return _adicionar_assinatura_ao_rodape(html, assinatura_cid)
 
 
-def formatar_assunto(numero_apolice: str | None, custom: str | None = None) -> str:
+_ASSUNTO_VARIAVEL = re.compile(
+    r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}|\{([A-Za-z_][A-Za-z0-9_]*)\}"
+)
+
+
+def formatar_assunto(
+    numero_apolice: str | None,
+    custom: str | None = None,
+    contexto: Mapping[str, Any] | None = None,
+) -> str:
+    """Renderiza variaveis simples sem expor o acesso a atributos do format()."""
     tpl = custom or settings.email_subject_default or "Envio de Apolice"
-    try:
-        return tpl.format(numero_apolice=numero_apolice or "")
-    except Exception:
-        return tpl
+    ctx: dict[str, Any] = dict(contexto or {})
+    ctx.setdefault("numero_apolice", numero_apolice or "")
+
+    def substituir(match: re.Match[str]) -> str:
+        chave = match.group(1) or match.group(2)
+        if chave not in ctx:
+            return match.group(0)
+        valor = ctx.get(chave)
+        return "" if valor is None else str(valor)
+
+    return _ASSUNTO_VARIAVEL.sub(substituir, tpl)
 
 
 def enviar_email(
     *,
-    destinatario: str,
+    destinatario: str | Iterable[str],
     assunto: str,
     corpo_html: str,
     anexos: Iterable[str | Path] = (),
@@ -263,6 +286,11 @@ def enviar_email(
     assinatura_cid: str | None = None,
     tracking_id: str | None = None,
 ) -> str:
+    destinatarios = destinatarios_service.combinar(
+        [destinatario] if isinstance(destinatario, str) else destinatario
+    )
+    if not destinatarios:
+        raise ValueError("Informe ao menos um destinatario")
     faltantes = []
     if not (settings.smtp_host or "").strip():
         faltantes.append("SMTP_HOST")
@@ -279,7 +307,7 @@ def enviar_email(
 
     msg = EmailMessage()
     msg["From"] = f"{settings.smtp_from_name} <{settings.smtp_from_email}>"
-    msg["To"] = destinatario
+    msg["To"] = ", ".join(destinatarios)
     msg["Subject"] = assunto
     message_id = make_msgid(domain="terrafertil.local")
     msg["Message-ID"] = message_id
@@ -348,7 +376,7 @@ def enviar_email(
         ) as smtp:
             if settings.smtp_user:
                 smtp.login(settings.smtp_user, settings.smtp_password)
-            smtp.send_message(msg)
+            smtp.send_message(msg, to_addrs=destinatarios)
     elif settings.smtp_use_tls:
         with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:
             smtp.ehlo()
@@ -356,17 +384,17 @@ def enviar_email(
             smtp.ehlo()
             if settings.smtp_user:
                 smtp.login(settings.smtp_user, settings.smtp_password)
-            smtp.send_message(msg)
+            smtp.send_message(msg, to_addrs=destinatarios)
     else:
         with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:
             if settings.smtp_user:
                 smtp.login(settings.smtp_user, settings.smtp_password)
-            smtp.send_message(msg)
+            smtp.send_message(msg, to_addrs=destinatarios)
 
     log.info(
         "E-mail aceite pelo SMTP %s → %s (message_id=%s, tracking=%s)",
         settings.smtp_host,
-        destinatario,
+        ", ".join(destinatarios),
         message_id,
         tracking_id or "-",
     )

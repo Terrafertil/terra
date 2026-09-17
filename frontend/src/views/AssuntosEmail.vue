@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { api } from '../api'
 import { tiposVinculados } from '../utils/assuntoEmail'
@@ -10,6 +10,8 @@ const carregando = ref(false)
 const erro = ref('')
 const ok = ref('')
 const editandoId = ref(null)
+const placeholders = ref([])
+const assuntoRef = ref(null)
 
 const form = reactive({
   nome: '',
@@ -32,12 +34,14 @@ async function carregar() {
   carregando.value = true
   erro.value = ''
   try {
-    const [assuntosResponse, tiposResponse] = await Promise.all([
+    const [assuntosResponse, tiposResponse, atalhosResponse] = await Promise.all([
       api.get('/api/assuntos-email'),
       api.get('/api/tipos-envio'),
+      api.get('/api/corpos-email/atalhos'),
     ])
     lista.value = assuntosResponse.data
     tipos.value = tiposResponse.data
+    placeholders.value = atalhosResponse.data?.placeholders || []
   } catch (e) {
     erro.value = e.response?.data?.detail || 'Erro ao carregar assuntos'
   } finally {
@@ -57,6 +61,18 @@ function editar(row) {
 function cancelar() {
   editandoId.value = null
   Object.assign(form, vazio())
+}
+
+function inserirVariavel(chave) {
+  const token = `{${chave}}`
+  const el = assuntoRef.value
+  const inicio = el?.selectionStart ?? form.assunto.length
+  const fim = el?.selectionEnd ?? inicio
+  form.assunto = form.assunto.slice(0, inicio) + token + form.assunto.slice(fim)
+  nextTick(() => {
+    el?.focus()
+    el?.setSelectionRange(inicio + token.length, inicio + token.length)
+  })
 }
 
 async function salvar() {
@@ -131,13 +147,30 @@ onMounted(carregar)
           <div>
             <label>Texto do assunto *</label>
             <input
+              ref="assuntoRef"
               v-model="form.assunto"
               maxlength="500"
               placeholder="Ex.: Sua apólice {numero_apolice}"
             />
             <small class="text-muted">
-              Use <code>{numero_apolice}</code> para inserir o número automaticamente.
+              Clique em uma variável abaixo para inseri-la automaticamente.
             </small>
+          </div>
+        </div>
+        <div class="variaveis-assunto mt-2">
+          <small class="text-muted">
+            No assunto use <code>{variavel}</code>; no corpo use <code v-pre>{{ variavel }}</code>.
+          </small>
+          <div class="variaveis-botoes mt-2">
+            <button
+              v-for="item in placeholders"
+              :key="item.chave"
+              type="button"
+              class="btn btn-ghost btn-sm"
+              @click="inserirVariavel(item.chave)"
+            >
+              {{ item.label }} · <code>{{ '{' + item.chave + '}' }}</code>
+            </button>
           </div>
         </div>
         <div class="mt-2">
@@ -199,3 +232,11 @@ onMounted(carregar)
     </div>
   </div>
 </template>
+
+<style scoped>
+.variaveis-botoes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+</style>

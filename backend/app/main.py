@@ -34,6 +34,7 @@ from .routers import (
     assuntos_email,
     assinaturas,
     capa,
+    capas,
     backup,
     notificacoes,
     soc,
@@ -41,6 +42,7 @@ from .routers import (
 )
 from .services.full_watcher import watcher_global
 from .services.backup_service import aplicar_retencao_automatica
+from .services.capa_service import importar_capa_legada
 
 
 logging.basicConfig(
@@ -83,6 +85,7 @@ async def lifespan(app: FastAPI):
     aplicar_retencao_automatica()
     db = SessionLocal()
     try:
+        importar_capa_legada(db)
         seed_admin(db)
         seed_diretor(db)
     finally:
@@ -136,6 +139,7 @@ app.include_router(corpos_email.router)
 app.include_router(assuntos_email.router)
 app.include_router(assinaturas.router)
 app.include_router(capa.router)
+app.include_router(capas.router)
 app.include_router(backup.router)
 app.include_router(notificacoes.router)
 app.include_router(envios.router)

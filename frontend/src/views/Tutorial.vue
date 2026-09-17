@@ -25,10 +25,10 @@ const modelos = [
   },
   {
     nome: 'Porto / SulAmérica (PDF com senha)',
-    full: false,
-    pasta: '—',
+    full: true,
+    pasta: 'tipo configurado/',
     layout: 'porto_sulamerica_criptografado',
-    dica: 'Use Envio Manual: escolha o cliente e informe o nº da apólice.',
+    dica: 'No FULL, mantenha o arquivo .senha ao lado do PDF; no manual, informe a senha na tela.',
   },
   {
     nome: 'PDF só imagem',
@@ -44,7 +44,7 @@ const passos = [
     titulo: '1. Configure o básico',
     itens: [
       'Configure corpos e assuntos de e-mail e associe ambos ao tipo de envio correspondente.',
-      'Envie a capa Terra Fértil em Capa (vira capa.pdf junto com cada apólice).',
+      'Cadastre os modelos em Capas e escolha, por tipo, quais entram antes e depois da apólice.',
       'Cadastre assinaturas em Assinaturas e vincule ao FULL se necessário.',
     ],
     rota: '/dashboard',
@@ -54,6 +54,7 @@ const passos = [
     titulo: '2. Clientes e veículos',
     itens: [
       'Cadastre cada cliente com CPF correto — o FULL identifica pelo documento.',
+      'Adicione destinatários fixos quando mais de uma pessoa sempre precisar receber os e-mails do cliente.',
       'Em Autos, vincule placas aos clientes para preencher dados no e-mail.',
     ],
     rota: '/clientes',
@@ -65,6 +66,7 @@ const passos = [
       'Crie tipos (auto, moto, auto_casco) em Tipos de Envio — cada um ganha uma pasta no FULL.',
       'Em Corpos de E-mail, use os atalhos por modelo ou crie os seus.',
       'Em Assuntos, salve os títulos que aparecerão na caixa de entrada do cliente.',
+      'Use as variáveis de pagamento, parcelamento, proposta e item segurado no assunto ou no corpo.',
       'Associe corpo e assunto ao tipo correspondente; o FULL e o manual herdam os dois.',
     ],
     rota: '/tipos-envio',
@@ -84,6 +86,7 @@ const passos = [
     titulo: '5. Envio manual',
     itens: [
       'Use para PDFs protegidos, só imagem ou envios pontuais.',
+      'Você pode acrescentar destinatários apenas para aquele envio e escolher várias capas iniciais e finais.',
       'Atalhos no Dashboard levam direto ao envio com o modelo certo.',
     ],
     rota: '/envio',
@@ -138,7 +141,7 @@ const passos = [
     </section>
 
     <section class="card">
-      <h3>Atalhos e HTML nos corpos de e-mail</h3>
+      <h3>Editor e atalhos dos corpos de e-mail</h3>
       <p class="text-muted">
         Em <RouterLink to="/corpos-email">Corpos de E-mail</RouterLink>, ative
         <strong>Atalhos visíveis</strong>. Use o tour guiado («Rever tour» no menu) para a mini-aula completa.
@@ -158,12 +161,14 @@ const passos = [
       </ul>
       <h4 class="mt-3" style="font-size: 1rem">HTML básico (resumo)</h4>
       <ul class="tutorial-lista">
+        <li>Use a barra visual para fonte, tamanho, negrito, itálico, cores, listas, alinhamento, recuo, links e citações.</li>
+        <li>As linhas em branco criadas com Enter são preservadas no e-mail enviado.</li>
         <li><code>&lt;p&gt;</code> parágrafo · <code>&lt;strong&gt;</code> negrito · <code>&lt;br/&gt;</code> quebra de linha</li>
         <li>
           Condicional:
           <code v-pre>{% if numero_apolice %}…{% endif %}</code> — não apague essas marcas.
         </li>
-        <li>Não cole do Word; não use <code>&lt;html&gt;</code> / <code>&lt;body&gt;</code> no editor.</li>
+        <li>Ao colar conteúdo externo, o editor remove elementos inseguros antes de guardar.</li>
         <li>Associe o corpo ao tipo em <RouterLink to="/tipos-envio">Tipos de Envio</RouterLink>.</li>
       </ul>
     </section>
@@ -212,7 +217,7 @@ const passos = [
       <ul class="tutorial-lista">
         <li>
           <strong>Pastas persistentes</strong> — em <code>backend/.env</code>: <code>entrada/</code>,
-          <code>backup/</code>, <code>processados/</code>, <code>data/envio.db</code> e <code>capas/capa.pdf</code>
+          <code>backup/</code>, <code>processados/</code>, <code>data/envio.db</code> e <code>capas/</code>
           devem ficar num disco com cópia de segurança regular.
         </li>
         <li>
@@ -251,7 +256,8 @@ const passos = [
           <strong>Demonstrar e-mail</strong> ou envio de teste antes de ativar o FULL em volume.
         </li>
         <li>
-          Mantenha <code>backend/capas/capa.pdf</code> alinhada à identidade Terra Fértil (versão atual da corretora).
+          Mantenha apenas modelos atuais na biblioteca de <RouterLink to="/capa">Capas</RouterLink>
+          e revise a ordem inicial/final configurada em cada tipo.
         </li>
       </ul>
     </section>

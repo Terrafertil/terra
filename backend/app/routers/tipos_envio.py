@@ -25,11 +25,32 @@ def _to_out(t: models.TipoEnvio) -> dict:
         "na_fila_full": t.na_fila_full,
         "corpo_email_id": t.corpo_email_id,
         "assunto_email_id": t.assunto_email_id,
+        "capas_iniciais_ids": t.capas_iniciais_ids,
+        "capas_finais_ids": t.capas_finais_ids,
         "ativo": t.ativo,
         "created_at": t.created_at,
         "updated_at": t.updated_at,
         "pasta": _pasta_tipo(t.codigo),
     }
+
+
+def _validar_capas(db: Session, *listas: list[int] | None) -> None:
+    for ids in listas:
+        if ids is None:
+            continue
+        if len(ids) != len(set(ids)):
+            raise HTTPException(400, "Uma mesma capa não pode ser repetida na mesma posição")
+        if not ids:
+            continue
+        encontrados = {
+            row[0]
+            for row in db.query(models.CapaModelo.id).filter(
+                models.CapaModelo.id.in_(ids), models.CapaModelo.ativo.is_(True)
+            )
+        }
+        faltantes = [capa_id for capa_id in ids if capa_id not in encontrados]
+        if faltantes:
+            raise HTTPException(400, f"Capas inválidas ou inativas: {faltantes}")
 
 
 @router.get("", response_model=list[schemas.TipoEnvioOut])
@@ -67,6 +88,7 @@ def criar(
     if payload.assunto_email_id:
         if not db.get(models.AssuntoEmail, payload.assunto_email_id):
             raise HTTPException(400, "assunto_email_id invalido")
+    _validar_capas(db, payload.capas_iniciais_ids, payload.capas_finais_ids)
     if payload.ordem == 0:
         # próxima ordem
         max_ordem = db.query(models.TipoEnvio).count()
@@ -108,6 +130,11 @@ def atualizar(
     if "assunto_email_id" in dados and dados["assunto_email_id"]:
         if not db.get(models.AssuntoEmail, dados["assunto_email_id"]):
             raise HTTPException(400, "assunto_email_id invalido")
+    _validar_capas(
+        db,
+        dados.get("capas_iniciais_ids"),
+        dados.get("capas_finais_ids"),
+    )
     codigo_antigo = t.codigo
     for k, v in dados.items():
         setattr(t, k, v)

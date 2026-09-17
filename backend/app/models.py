@@ -1,4 +1,5 @@
 """Modelos ORM (SQLAlchemy)."""
+import json
 from datetime import datetime
 from sqlalchemy import String, Integer, DateTime, ForeignKey, Text, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -19,6 +20,8 @@ class Cliente(Base):
     email_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     telefone: Mapped[str | None] = mapped_column(String(30), nullable=True)
     observacoes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Lista JSON cifrada junto com os demais dados pessoais do cliente.
+    destinatarios_adicionais_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     ativo: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -31,6 +34,20 @@ class Cliente(Base):
     autos: Mapped[list["Auto"]] = relationship(
         back_populates="cliente", cascade="all, delete-orphan"
     )
+
+    @property
+    def destinatarios_adicionais(self) -> list[str]:
+        try:
+            valor = json.loads(self.destinatarios_adicionais_json or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+        return [str(item) for item in valor if isinstance(item, str) and item.strip()]
+
+    @destinatarios_adicionais.setter
+    def destinatarios_adicionais(self, valor: list[str] | None) -> None:
+        self.destinatarios_adicionais_json = json.dumps(
+            list(valor or []), ensure_ascii=False
+        )
 
 
 class Auto(Base):
@@ -110,6 +127,9 @@ class TipoEnvio(Base):
     assunto_email_id: Mapped[int | None] = mapped_column(
         ForeignKey("assuntos_email.id"), nullable=True
     )
+    # IDs ordenados dos modelos de capa usados como padrao do tipo/FULL.
+    capas_iniciais_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    capas_finais_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     ativo: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -118,6 +138,30 @@ class TipoEnvio(Base):
 
     corpo_email: Mapped["CorpoEmail | None"] = relationship(back_populates="tipos")
     assunto_email: Mapped["AssuntoEmail | None"] = relationship(back_populates="tipos")
+
+    @staticmethod
+    def _ids_json(valor: str | None) -> list[int]:
+        try:
+            itens = json.loads(valor or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+        return [int(item) for item in itens if isinstance(item, int) and not isinstance(item, bool)]
+
+    @property
+    def capas_iniciais_ids(self) -> list[int]:
+        return self._ids_json(self.capas_iniciais_json)
+
+    @capas_iniciais_ids.setter
+    def capas_iniciais_ids(self, valor: list[int] | None) -> None:
+        self.capas_iniciais_json = json.dumps(list(valor or []))
+
+    @property
+    def capas_finais_ids(self) -> list[int]:
+        return self._ids_json(self.capas_finais_json)
+
+    @capas_finais_ids.setter
+    def capas_finais_ids(self, valor: list[int] | None) -> None:
+        self.capas_finais_json = json.dumps(list(valor or []))
 
 
 class Assinatura(Base):
@@ -138,6 +182,26 @@ class Assinatura(Base):
     )
 
 
+class CapaModelo(Base):
+    """PDF reutilizavel que pode ser colocado antes ou depois da apolice."""
+
+    __tablename__ = "capas_modelos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    nome: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    descricao: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    arquivo: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    nome_original: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    tamanho_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    paginas: Mapped[int] = mapped_column(Integer, default=0)
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ativo: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
 class Envio(Base):
     __tablename__ = "envios"
 
@@ -151,9 +215,19 @@ class Envio(Base):
     nome_arquivo_final: Mapped[str | None] = mapped_column(String(500), nullable=True)
     nome_boleto: Mapped[str | None] = mapped_column(String(500), nullable=True)
     numero_apolice: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    forma_pagamento: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    parcelamento: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    numero_proposta: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    item_segurado: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    # Snapshot ordenado das capas aplicadas; guarda id/nome/hash para auditoria.
+    capas_iniciais_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    capas_finais_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Snapshot do endereço efetivamente usado nesta tentativa. Não depende de
     # alterações posteriores no cadastro do cliente.
-    destinatario_email: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    destinatario_email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Quantos enderecos no fim do snapshot vieram apenas do envio manual. Isso
+    # permite preserva-los no retry sem duplicar e-mails sensiveis em outra coluna.
+    destinatarios_manuais_qtd: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(20), default="pendente")
     erro_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
     caminho_backup: Mapped[str | None] = mapped_column(String(500), nullable=True)

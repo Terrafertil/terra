@@ -6,10 +6,23 @@ from ..database import get_db
 from .. import models, schemas
 from ..auth import require_user, require_admin
 from ..services import lgpd_service
-from ..services import cliente_crypto
+from ..services import cliente_crypto, destinatarios_service
 
 
 router = APIRouter(prefix="/api/clientes", tags=["clientes"])
+
+
+def _dados_cliente(payload, *, exclude_unset: bool = False) -> dict:
+    dados = payload.model_dump(exclude_unset=exclude_unset)
+    if "destinatarios_adicionais" in dados:
+        principal = str(dados.get("email") or "").strip().casefold()
+        adicionais = destinatarios_service.combinar(
+            dados.get("destinatarios_adicionais") or []
+        )
+        dados["destinatarios_adicionais"] = [
+            email for email in adicionais if email.casefold() != principal
+        ]
+    return dados
 
 
 @router.get("", response_model=list[schemas.ClienteOut])
@@ -42,7 +55,7 @@ def criar(
     db: Session = Depends(get_db),
     _=Depends(require_user),
 ):
-    c = models.Cliente(**payload.model_dump())
+    c = models.Cliente(**_dados_cliente(payload))
     db.add(c)
     db.commit()
     db.refresh(c)
@@ -61,7 +74,16 @@ def atualizar(
     if not c:
         raise HTTPException(404, "Cliente não encontrado")
     cliente_crypto.decrypt_cliente_fields(c)
-    for k, v in payload.model_dump(exclude_unset=True).items():
+    dados = _dados_cliente(payload, exclude_unset=True)
+    # Se apenas os adicionais forem alterados, considere o e-mail principal
+    # atual ao remover duplicatas.
+    if "destinatarios_adicionais" in dados and "email" not in dados:
+        dados["destinatarios_adicionais"] = [
+            email
+            for email in dados["destinatarios_adicionais"]
+            if email.casefold() != (c.email or "").strip().casefold()
+        ]
+    for k, v in dados.items():
         setattr(c, k, v)
     db.commit()
     db.refresh(c)

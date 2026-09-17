@@ -137,11 +137,6 @@ onUnmounted(() => {
     <div v-if="status?.email_configured === false" class="alert alert-err">
       O envio de e-mails está indisponível: as credenciais SMTP não estão configuradas no servidor.
     </div>
-    <div v-if="status?.webhook_configured === false" class="alert alert-warn">
-      A confirmação de entrega está indisponível. O SMTP ainda pode aceitar envios, mas sem o webhook
-      da Brevo o sistema não consegue confirmar entrega, bloqueio ou rejeição do destinatário.
-    </div>
-
     <DiretorPainel v-if="auth.isDiretor" />
     <SocPainel
       v-if="status"

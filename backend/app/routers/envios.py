@@ -20,7 +20,15 @@ from ..config import settings
 from ..database import SessionLocal, get_db
 from .. import models, schemas
 from ..auth import require_user
-from ..services import envio_service, ocr_service, pdf_service, cliente_crypto, file_provenance
+from ..services import (
+    envio_service,
+    ocr_service,
+    pdf_service,
+    cliente_crypto,
+    file_provenance,
+    destinatarios_service,
+    capa_service,
+)
 from ..services.pdf_service import PdfRequerSenhaError, PdfSenhaInvalidaError
 from ..services.upload_service import save_upload
 
@@ -58,8 +66,35 @@ def _envio_out(envio: models.Envio) -> schemas.EnvioOut:
     if envio.cliente:
         out.cliente_nome = envio.cliente.nome
         out.cliente_email_atual = envio.cliente.email
+        try:
+            out.cliente_destinatarios_atuais = destinatarios_service.do_cliente(
+                envio.cliente
+            )
+        except ValueError:
+            out.cliente_destinatarios_atuais = [envio.cliente.email]
     destinatario = envio.destinatario_email
     out.destinatario_email = destinatario
+    out.destinatarios = destinatarios_service.do_snapshot(destinatario)
+    qtd_manuais = max(0, int(getattr(envio, "destinatarios_manuais_qtd", 0) or 0))
+    out.destinatarios_manuais = (
+        out.destinatarios[-qtd_manuais:] if qtd_manuais else []
+    )
+    for campo in ("capas_iniciais", "capas_finais"):
+        bruto = getattr(envio, f"{campo}_json", None)
+        try:
+            itens = json.loads(bruto or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            itens = []
+        snapshots_validos = []
+        if isinstance(itens, list):
+            for item in itens:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    snapshots_validos.append(schemas.CapaSnapshotOut(**item))
+                except (TypeError, ValueError):
+                    continue
+        setattr(out, campo, snapshots_validos)
     # Compatibilidade com clientes antigos da API: agora este campo também
     # representa somente o snapshot. Registros legados ficam nulos para não
     # atribuir retroativamente um destinatário que pode ter sido alterado.
@@ -374,7 +409,16 @@ def _resolver_cliente(
             dados = schemas.ClienteCreate(**json.loads(cliente_novo_json))
         except Exception as e:
             raise HTTPException(400, f"cliente_novo inválido: {e}")
-        cli = models.Cliente(**dados.model_dump())
+        valores = dados.model_dump()
+        principal = str(valores.get("email") or "").strip().casefold()
+        valores["destinatarios_adicionais"] = [
+            email
+            for email in destinatarios_service.combinar(
+                valores.get("destinatarios_adicionais") or []
+            )
+            if email.casefold() != principal
+        ]
+        cli = models.Cliente(**valores)
         if not persistir:
             # Demonstração: objeto efémero, sem commit na BD.
             return cli
@@ -402,7 +446,32 @@ async def _processar_request_manual(
     corpo_email_id: int | None,
     assinatura_id: int | None,
     pdf_senha: str | None = None,
+    destinatarios_adicionais: str | None = None,
+    forma_pagamento: str | None = None,
+    parcelamento: int | None = None,
+    numero_proposta: str | None = None,
+    item_segurado: str | None = None,
+    seguradora: str | None = None,
+    produto: str | None = None,
+    layout_apolice: str | None = None,
+    capas_iniciais_ids: str | None = None,
+    capas_finais_ids: str | None = None,
 ):
+    try:
+        adicionais = destinatarios_service.parse_json(destinatarios_adicionais)
+        ids_iniciais = (
+            None
+            if capas_iniciais_ids is None
+            else capa_service.parse_ids_json(capas_iniciais_ids, "capas_iniciais_ids")
+        )
+        ids_finais = (
+            None
+            if capas_finais_ids is None
+            else capa_service.parse_ids_json(capas_finais_ids, "capas_finais_ids")
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    pdf_senha = pdf_service.normalizar_senha_pdf(pdf_senha)
     cliente = _resolver_cliente(db, cliente_id, cliente_novo)
 
     up = settings.data_path(settings.upload_folder)
@@ -445,6 +514,11 @@ async def _processar_request_manual(
             )
             if not numero_apolice and dados_pdf.numero_apolice:
                 numero_apolice = dados_pdf.numero_apolice
+            seguradora = dados_pdf.seguradora or seguradora
+            produto = dados_pdf.produto or produto
+            layout_apolice = dados_pdf.layout or layout_apolice
+            if not item_segurado:
+                item_segurado = dados_pdf.produto
         except Exception as exc:
             log.warning("Falha ao extrair PDF no envio manual: %s", exc)
 
@@ -487,6 +561,16 @@ async def _processar_request_manual(
                 arquivo_colocado_por=rotulo,
                 boleto_path=destino_boleto,
                 boleto_nome_original=boleto_nome_original,
+                destinatarios_adicionais=adicionais,
+                forma_pagamento=forma_pagamento,
+                parcelamento=parcelamento,
+                numero_proposta=numero_proposta,
+                item_segurado=item_segurado,
+                seguradora=seguradora,
+                produto=produto,
+                layout_apolice=layout_apolice,
+                capas_iniciais_ids=ids_iniciais,
+                capas_finais_ids=ids_finais,
             )
             return int(envio_thread.id), getattr(envio_thread, "_erro_etapa", None)
         finally:
@@ -555,6 +639,16 @@ async def envio_manual(
     corpo_email_id: int | None = Form(None),
     assinatura_id: int | None = Form(None),
     pdf_senha: str | None = Form(None),
+    destinatarios_adicionais: str | None = Form(None),
+    forma_pagamento: str | None = Form(None, max_length=40),
+    parcelamento: int | None = Form(None, ge=1, le=12),
+    numero_proposta: str | None = Form(None, max_length=100),
+    item_segurado: str | None = Form(None, max_length=150),
+    seguradora: str | None = Form(None),
+    produto: str | None = Form(None),
+    layout_apolice: str | None = Form(None),
+    capas_iniciais_ids: str | None = Form(None),
+    capas_finais_ids: str | None = Form(None),
     db: Session = Depends(get_db),
     usuario: models.Usuario = Depends(require_user),
 ):
@@ -574,6 +668,16 @@ async def envio_manual(
         corpo_email_id=corpo_email_id,
         assinatura_id=assinatura_id,
         pdf_senha=pdf_senha,
+        destinatarios_adicionais=destinatarios_adicionais,
+        forma_pagamento=forma_pagamento,
+        parcelamento=parcelamento,
+        numero_proposta=numero_proposta,
+        item_segurado=item_segurado,
+        seguradora=seguradora,
+        produto=produto,
+        layout_apolice=layout_apolice,
+        capas_iniciais_ids=capas_iniciais_ids,
+        capas_finais_ids=capas_finais_ids,
     )
 
 
@@ -590,6 +694,11 @@ async def envio_avulso_legado(
     auto_id: int | None = Form(None),
     corpo_email_id: int | None = Form(None),
     assinatura_id: int | None = Form(None),
+    destinatarios_adicionais: str | None = Form(None),
+    forma_pagamento: str | None = Form(None, max_length=40),
+    parcelamento: int | None = Form(None, ge=1, le=12),
+    numero_proposta: str | None = Form(None, max_length=100),
+    item_segurado: str | None = Form(None, max_length=150),
     db: Session = Depends(get_db),
     usuario: models.Usuario = Depends(require_user),
 ):
@@ -609,6 +718,11 @@ async def envio_avulso_legado(
         auto_id=auto_id,
         corpo_email_id=corpo_email_id,
         assinatura_id=assinatura_id,
+        destinatarios_adicionais=destinatarios_adicionais,
+        forma_pagamento=forma_pagamento,
+        parcelamento=parcelamento,
+        numero_proposta=numero_proposta,
+        item_segurado=item_segurado,
     )
 
 
@@ -624,10 +738,23 @@ async def demonstrar_email(
     corpo_email_id: int | None = Form(None),
     assinatura_id: int | None = Form(None),
     pdf_senha: str | None = Form(None),
+    destinatarios_adicionais: str | None = Form(None),
+    forma_pagamento: str | None = Form(None, max_length=40),
+    parcelamento: int | None = Form(None, ge=1, le=12),
+    numero_proposta: str | None = Form(None, max_length=100),
+    item_segurado: str | None = Form(None, max_length=150),
+    seguradora: str | None = Form(None),
+    produto: str | None = Form(None),
+    layout_apolice: str | None = Form(None),
     db: Session = Depends(get_db),
     _=Depends(require_user),
 ):
     """Não envia: só renderiza assunto/corpo do e-mail com os dados informados."""
+    try:
+        adicionais = destinatarios_service.parse_json(destinatarios_adicionais)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    pdf_senha = pdf_service.normalizar_senha_pdf(pdf_senha)
     cliente = _resolver_cliente(db, cliente_id, cliente_novo, persistir=False)
 
     if arquivo and arquivo.filename and extrair_dados:
@@ -647,6 +774,11 @@ async def demonstrar_email(
                 )
                 if not numero_apolice and d.numero_apolice:
                     numero_apolice = d.numero_apolice
+                seguradora = d.seguradora or seguradora
+                produto = d.produto or produto
+                layout_apolice = d.layout or layout_apolice
+                if not item_segurado:
+                    item_segurado = d.produto
             except Exception as exc:
                 log.warning("Falha ao extrair PDF na demonstração: %s", exc)
         finally:
@@ -670,5 +802,13 @@ async def demonstrar_email(
         tipo_codigo=tipo_codigo,
         assinatura_id=assinatura_id,
         corpo_email_id=corpo_email_id,
+        destinatarios_adicionais=adicionais,
+        forma_pagamento=forma_pagamento,
+        parcelamento=parcelamento,
+        numero_proposta=numero_proposta,
+        item_segurado=item_segurado,
+        seguradora=seguradora,
+        produto=produto,
+        layout_apolice=layout_apolice,
     )
     return out

@@ -61,11 +61,14 @@ def init_db() -> None:
     from . import models  # noqa: F401  (garante registro dos models)
 
     Base.metadata.create_all(bind=engine)
+    # Estas colunas precisam existir antes de qualquer consulta ORM: os models
+    # consolidados ja as selecionam mesmo em bancos legados.
+    _migrate_clientes_crypto_columns()
+    _migrate_envios_columns()
+    _migrate_tipos_envio_columns()
     _migrate_assuntos_email()
     _migrate_runtime_config_columns()
-    _migrate_envios_columns()
     _migrate_avulso_para_manual()
-    _migrate_clientes_crypto_columns()
     _migrate_usuarios_columns()
     _migrate_diretor_protegido()
     _seed_runtime_config()
@@ -78,6 +81,10 @@ def init_db() -> None:
 
 def _migrate_assuntos_email() -> None:
     """Adiciona o vinculo de assunto e importa assuntos legados dos corpos."""
+    # Alguns testes, scripts de manutencao e instalacoes antigas executam esta
+    # migracao diretamente. Garanta antes as demais colunas do model
+    # ``TipoEnvio`` para que a consulta ORM abaixo tambem funcione nesses casos.
+    _migrate_tipos_envio_columns()
     insp = inspect(engine)
     if "tipos_envio" not in insp.get_table_names():
         return
@@ -207,6 +214,22 @@ def _migrate_clientes_crypto_columns() -> None:
             conn.execute(text("ALTER TABLE clientes ADD COLUMN cnpj_hash VARCHAR(64)"))
         if "email_hash" not in cols:
             conn.execute(text("ALTER TABLE clientes ADD COLUMN email_hash VARCHAR(64)"))
+        if "destinatarios_adicionais_json" not in cols:
+            conn.execute(
+                text("ALTER TABLE clientes ADD COLUMN destinatarios_adicionais_json TEXT")
+            )
+
+
+def _migrate_tipos_envio_columns() -> None:
+    insp = inspect(engine)
+    if "tipos_envio" not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns("tipos_envio")}
+    with engine.begin() as conn:
+        if "capas_iniciais_json" not in cols:
+            conn.execute(text("ALTER TABLE tipos_envio ADD COLUMN capas_iniciais_json TEXT"))
+        if "capas_finais_json" not in cols:
+            conn.execute(text("ALTER TABLE tipos_envio ADD COLUMN capas_finais_json TEXT"))
 
 
 def _migrate_runtime_config_columns() -> None:
@@ -376,8 +399,33 @@ def _migrate_envios_columns() -> None:
             conn.execute(
                 text("ALTER TABLE envios ADD COLUMN destinatario_email VARCHAR(1024)")
             )
+        if "destinatarios_manuais_qtd" not in cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE envios ADD COLUMN "
+                    "destinatarios_manuais_qtd INTEGER DEFAULT 0"
+                )
+            )
         if "reenvio_de_id" not in cols:
             conn.execute(text("ALTER TABLE envios ADD COLUMN reenvio_de_id INTEGER"))
+        if "forma_pagamento" not in cols:
+            conn.execute(text("ALTER TABLE envios ADD COLUMN forma_pagamento VARCHAR(40)"))
+        if "parcelamento" not in cols:
+            conn.execute(text("ALTER TABLE envios ADD COLUMN parcelamento INTEGER"))
+        if "numero_proposta" not in cols:
+            conn.execute(text("ALTER TABLE envios ADD COLUMN numero_proposta VARCHAR(100)"))
+        if "item_segurado" not in cols:
+            conn.execute(text("ALTER TABLE envios ADD COLUMN item_segurado VARCHAR(150)"))
+        if "capas_iniciais_json" not in cols:
+            conn.execute(text("ALTER TABLE envios ADD COLUMN capas_iniciais_json TEXT"))
+        if "capas_finais_json" not in cols:
+            conn.execute(text("ALTER TABLE envios ADD COLUMN capas_finais_json TEXT"))
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_envios_numero_proposta "
+                "ON envios (numero_proposta)"
+            )
+        )
         conn.execute(
             text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS ux_envios_idempotency_key "

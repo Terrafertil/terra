@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, reactive } from 'vue'
 import { api } from '../api'
+import EmailListInput from '../components/EmailListInput.vue'
 
 const clientes = ref([])
 const duplicados = ref([])
@@ -19,7 +20,16 @@ const form = reactive(vazio())
 const editandoId = ref(null)
 
 function vazio() {
-  return { nome: '', email: '', cpf: '', cnpj: '', telefone: '', observacoes: '', ativo: true }
+  return {
+    nome: '',
+    email: '',
+    destinatarios_adicionais: [],
+    cpf: '',
+    cnpj: '',
+    telefone: '',
+    observacoes: '',
+    ativo: true,
+  }
 }
 
 async function carregar() {
@@ -37,7 +47,18 @@ async function carregar() {
 
 function editar(c) {
   editandoId.value = c.id
-  Object.assign(form, c)
+  Object.assign(form, vazio(), {
+    nome: c.nome || '',
+    email: c.email || '',
+    destinatarios_adicionais: Array.isArray(c.destinatarios_adicionais)
+      ? [...c.destinatarios_adicionais]
+      : [],
+    cpf: c.cpf || '',
+    cnpj: c.cnpj || '',
+    telefone: c.telefone || '',
+    observacoes: c.observacoes || '',
+    ativo: c.ativo !== false,
+  })
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
@@ -166,6 +187,15 @@ onMounted(async () => {
           </div>
         </div>
         <div class="mt-2">
+          <EmailListInput
+            v-model="form.destinatarios_adicionais"
+            label="Destinatários adicionais fixos"
+            hint="Estes endereços também receberão todos os e-mails enviados para este cliente. Pressione Enter, vírgula ou ponto e vírgula para adicionar."
+            placeholder="outro@exemplo.com"
+            :max="19"
+          />
+        </div>
+        <div class="mt-2">
           <label>Observações</label>
           <textarea v-model="form.observacoes" />
         </div>
@@ -216,7 +246,21 @@ onMounted(async () => {
         <tbody>
           <tr v-for="c in clientes" :key="c.id">
             <td>{{ c.nome }}</td>
-            <td>{{ c.email }}</td>
+            <td>
+              <div>{{ c.email }}</div>
+              <div
+                v-if="Array.isArray(c.destinatarios_adicionais) && c.destinatarios_adicionais.length"
+                class="cliente-emails-adicionais"
+              >
+                <span
+                  v-for="email in c.destinatarios_adicionais"
+                  :key="email.toLocaleLowerCase()"
+                  class="cliente-email-adicional"
+                >
+                  {{ email }}
+                </span>
+              </div>
+            </td>
             <td>{{ c.cpf || '—' }}</td>
             <td>{{ c.cnpj || '—' }}</td>
             <td>{{ c.telefone || '—' }}</td>
@@ -258,3 +302,23 @@ onMounted(async () => {
     </div>
   </div>
 </template>
+
+<style scoped>
+.cliente-emails-adicionais {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.3rem;
+}
+
+.cliente-email-adicional {
+  display: inline-block;
+  max-width: 100%;
+  padding: 0.12rem 0.4rem;
+  border-radius: 999px;
+  background: var(--terra-100);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+</style>

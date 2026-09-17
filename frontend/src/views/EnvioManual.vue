@@ -5,6 +5,9 @@ import { api } from '../api'
 import { useUiStore } from '../stores/ui'
 import { sanitizeEmailHtml } from '../utils/sanitizeEmail'
 import { assuntoVinculado } from '../utils/assuntoEmail'
+import { renderizarAssunto, rotuloParcelamento } from '../utils/templateEmail'
+import EmailListInput from '../components/EmailListInput.vue'
+import CapaOrderSelector from '../components/CapaOrderSelector.vue'
 import {
   ANALISE_PDF_TIMEOUT_MS,
   ENVIO_EMAIL_TIMEOUT_MS,
@@ -64,11 +67,25 @@ const tipos = ref([])
 const corpos = ref([])
 const assuntos = ref([])
 const assinaturas = ref([])
+const capas = ref([])
+const configuracaoEmail = ref({ smtp_from_name: '', email_subject_default: '' })
 
 const clienteId = ref(null)
 const criarNovo = ref(false)
-const novoCliente = reactive({ nome: '', email: '', cpf: '', cnpj: '', telefone: '' })
+const novoCliente = reactive({
+  nome: '',
+  email: '',
+  destinatarios_adicionais: [],
+  cpf: '',
+  cnpj: '',
+  telefone: '',
+})
+const destinatariosManuais = ref([])
 const numeroApolice = ref('')
+const formaPagamento = ref('')
+const parcelamento = ref(null)
+const numeroProposta = ref('')
+const itemSegurado = ref('')
 const extrairDados = ref(true)
 const tipoCodigo = ref('')
 const autoId = ref(null)
@@ -91,17 +108,49 @@ const usarOcr = ref(true)
 const pdfSenha = ref('')
 const mostrarConfirmacao = ref(false)
 const confirmouEmail = ref(false)
+const capasIniciaisIds = ref([])
+const capasFinaisIds = ref([])
 
-const emailDestino = computed(() => {
-  if (criarNovo.value) return (novoCliente.email || '').trim()
-  const c = clientes.value.find((x) => x.id === clienteId.value)
-  return c?.email?.trim() || ''
+const clienteSelecionado = computed(() =>
+  clientes.value.find((x) => x.id === clienteId.value) || null
+)
+
+function emailsUnicos(...listas) {
+  const vistos = new Set()
+  const resultado = []
+  for (const email of listas.flat()) {
+    const normalizado = String(email || '').trim()
+    const chave = normalizado.toLocaleLowerCase()
+    if (!normalizado || vistos.has(chave)) continue
+    vistos.add(chave)
+    resultado.push(normalizado)
+  }
+  return resultado
+}
+
+const destinatariosFixos = computed(() => {
+  if (criarNovo.value) {
+    return emailsUnicos(novoCliente.email, novoCliente.destinatarios_adicionais)
+  }
+  return emailsUnicos(
+    clienteSelecionado.value?.email,
+    clienteSelecionado.value?.destinatarios_adicionais || [],
+  )
 })
+
+const destinatariosEnvio = computed(() =>
+  emailsUnicos(destinatariosFixos.value, destinatariosManuais.value)
+)
+
+const limiteDestinatariosManuais = computed(() =>
+  Math.max(0, 20 - destinatariosFixos.value.length)
+)
+
+const emailDestino = computed(() => destinatariosEnvio.value.join(', '))
 
 const nomeDestino = computed(() => {
   if (criarNovo.value) return (novoCliente.nome || '').trim()
-  const c = clientes.value.find((x) => x.id === clienteId.value)
-  return c?.nome?.trim() || ''
+  return clienteSelecionado.value?.nome?.trim() || ''
 })
 
 const mostrarCampoSenha = computed(
@@ -118,6 +167,10 @@ const autosCliente = computed(() =>
   clienteId.value ? autos.value.filter((a) => a.cliente_id === clienteId.value) : []
 )
 
+const autoSelecionado = computed(() =>
+  autos.value.find((auto) => String(auto.id) === String(autoId.value)) || null
+)
+
 const tipoSelecionado = computed(() =>
   tipos.value.find((tipo) => tipo.codigo === tipoCodigo.value) || null
 )
@@ -131,10 +184,39 @@ const assuntoSelecionado = computed(() =>
   assuntoVinculado(tipoSelecionado.value, assuntos.value)
 )
 
+const contextoAssunto = computed(() => ({
+  nome: nomeDestino.value,
+  email: destinatariosFixos.value[0] || '',
+  cpf: criarNovo.value ? novoCliente.cpf || '' : clienteSelecionado.value?.cpf || '',
+  cnpj: criarNovo.value ? novoCliente.cnpj || '' : clienteSelecionado.value?.cnpj || '',
+  telefone: criarNovo.value ? novoCliente.telefone || '' : clienteSelecionado.value?.telefone || '',
+  numero_apolice: numeroApolice.value || '',
+  forma_pagamento: formaPagamento.value || '',
+  parcelamento: rotuloParcelamento(parcelamento.value),
+  numero_proposta: numeroProposta.value || '',
+  item_segurado: itemSegurado.value || analise.value?.produto || '',
+  seguradora: analise.value?.seguradora || '',
+  produto: analise.value?.produto || '',
+  layout_apolice: analise.value?.layout || '',
+  tipo_codigo: tipoCodigo.value || '',
+  tipo_envio: 'MANUAL',
+  data_envio: new Intl.DateTimeFormat('pt-BR').format(new Date()),
+  placa: autoSelecionado.value?.placa || '',
+  marca: autoSelecionado.value?.marca || '',
+  modelo: autoSelecionado.value?.modelo || '',
+  ano: autoSelecionado.value?.ano || '',
+  from_name: configuracaoEmail.value.smtp_from_name || '',
+}))
+
 const assuntoPrevisto = computed(() => {
   const texto = assuntoSelecionado.value?.assunto || corpoSelecionado.value?.assunto
-  if (!texto) return 'Padrão global do sistema'
-  return texto.replaceAll('{numero_apolice}', numeroApolice.value || '')
+  if (!texto) {
+    return renderizarAssunto(
+      configuracaoEmail.value.email_subject_default || 'Envio de Apólice - {numero_apolice}',
+      contextoAssunto.value,
+    )
+  }
+  return renderizarAssunto(texto, contextoAssunto.value)
 })
 
 const nomeOrigemAssunto = computed(() => {
@@ -143,8 +225,12 @@ const nomeOrigemAssunto = computed(() => {
   return 'Padrão do sistema'
 })
 
+function nomesCapas(ids) {
+  return ids.map((id) => capas.value.find((capa) => Number(capa.id) === Number(id))?.nome || `#${id}`)
+}
+
 async function carregarOpcoes() {
-  const [c, t, co, s, a, au] = await Promise.all([
+  const [c, t, co, s, a, au, cp, status] = await Promise.all([
     api.get('/api/clientes', { params: { ativo: true } }),
     api.get('/api/tipos-envio', { params: { ativo: true } }),
     // Assim como o backend, preservamos corpos que foram desativados depois
@@ -156,6 +242,8 @@ async function carregarOpcoes() {
     api.get('/api/assuntos-email'),
     api.get('/api/assinaturas', { params: { ativo: true } }),
     api.get('/api/autos', { params: { ativo: true } }),
+    api.get('/api/capas', { params: { ativo: true } }),
+    api.get('/api/status'),
   ])
   clientes.value = c.data
   tipos.value = t.data
@@ -163,10 +251,17 @@ async function carregarOpcoes() {
   assuntos.value = s.data
   assinaturas.value = a.data
   autos.value = au.data
+  capas.value = cp.data
+  configuracaoEmail.value = status.data || configuracaoEmail.value
 }
 
 watch(clienteId, () => {
   autoId.value = null
+})
+
+watch(tipoCodigo, () => {
+  capasIniciaisIds.value = [...(tipoSelecionado.value?.capas_iniciais_ids || [])]
+  capasFinaisIds.value = [...(tipoSelecionado.value?.capas_finais_ids || [])]
 })
 
 watch(emailDestino, () => {
@@ -179,6 +274,19 @@ watch(extrairDados, (habilitado) => {
   if (habilitado && arquivo.value) analisarArquivo()
   if (!habilitado) analise.value = null
 })
+
+function normalizarSenhaPdf(valor) {
+  return String(valor || '').replace(/\s+/g, '')
+}
+
+function onSenhaInput(event) {
+  pdfSenha.value = normalizarSenhaPdf(event.target.value)
+}
+
+function restaurarCapasDoTipo() {
+  capasIniciaisIds.value = [...(tipoSelecionado.value?.capas_iniciais_ids || [])]
+  capasFinaisIds.value = [...(tipoSelecionado.value?.capas_finais_ids || [])]
+}
 
 function aplicarDadosDaAnalise(data) {
   if (data.numero_apolice) {
@@ -215,7 +323,8 @@ async function analisarArquivo() {
   const fd = new FormData()
   fd.append('arquivo', arquivo.value)
   fd.append('usar_ocr', usarOcr.value ? 'true' : 'false')
-  if (pdfSenha.value) fd.append('pdf_senha', pdfSenha.value)
+  const senha = normalizarSenhaPdf(pdfSenha.value)
+  if (senha) fd.append('pdf_senha', senha)
   try {
     const { data } = await api.post('/api/envios/analisar-pdf', fd, {
       headers: { 'Content-Type': 'multipart/form-data' },
@@ -260,6 +369,16 @@ function montarFormData() {
     fd.append('cliente_id', clienteId.value)
   }
   if (numeroApolice.value) fd.append('numero_apolice', numeroApolice.value)
+  fd.append('destinatarios_adicionais', JSON.stringify(destinatariosManuais.value))
+  if (formaPagamento.value) fd.append('forma_pagamento', formaPagamento.value)
+  if (parcelamento.value) fd.append('parcelamento', String(parcelamento.value))
+  if (numeroProposta.value) fd.append('numero_proposta', numeroProposta.value.trim())
+  if (itemSegurado.value) fd.append('item_segurado', itemSegurado.value.trim())
+  if (analise.value?.seguradora) fd.append('seguradora', analise.value.seguradora)
+  if (analise.value?.produto) fd.append('produto', analise.value.produto)
+  if (analise.value?.layout) fd.append('layout_apolice', analise.value.layout)
+  fd.append('capas_iniciais_ids', JSON.stringify(capasIniciaisIds.value))
+  fd.append('capas_finais_ids', JSON.stringify(capasFinaisIds.value))
   // A análise automática já ocorreu antes da confirmação e o número da apólice
   // é obrigatório no formulário. Evita repetir extração/OCR durante o POST SMTP.
   fd.append('extrair_dados', 'false')
@@ -267,7 +386,8 @@ function montarFormData() {
   if (autoId.value)        fd.append('auto_id', autoId.value)
   if (corpoEmailId.value)  fd.append('corpo_email_id', corpoEmailId.value)
   if (assinaturaId.value)  fd.append('assinatura_id', assinaturaId.value)
-  if (pdfSenha.value)      fd.append('pdf_senha', pdfSenha.value)
+  const senha = normalizarSenhaPdf(pdfSenha.value)
+  if (senha)               fd.append('pdf_senha', senha)
   return fd
 }
 
@@ -279,6 +399,10 @@ function validar({ exigirArquivo }) {
   }
   if (!(numeroApolice.value || '').trim()) {
     erro.value = 'Informe o número da apólice'
+    return false
+  }
+  if (destinatariosEnvio.value.length > 20) {
+    erro.value = 'Use no máximo 20 destinatários no total'
     return false
   }
   return true
@@ -420,6 +544,9 @@ onMounted(async () => {
               {{ c.nome }} — {{ c.email }}
             </option>
           </select>
+          <p v-if="clienteSelecionado?.destinatarios_adicionais?.length" class="text-muted mt-2 m-0">
+            Fixos deste cliente: {{ clienteSelecionado.destinatarios_adicionais.join(', ') }}
+          </p>
         </div>
 
         <div v-else class="row">
@@ -428,6 +555,26 @@ onMounted(async () => {
           <div><label>CPF</label><input v-model="novoCliente.cpf" /></div>
           <div><label>CNPJ</label><input v-model="novoCliente.cnpj" /></div>
           <div><label>Telefone</label><input v-model="novoCliente.telefone" /></div>
+        </div>
+        <div v-if="criarNovo" class="mt-2">
+          <EmailListInput
+            v-model="novoCliente.destinatarios_adicionais"
+            label="Destinatários adicionais fixos do novo cliente"
+            hint="Ficarão salvos no cadastro e receberão os próximos envios deste cliente."
+            :max="19"
+          />
+        </div>
+        <div class="mt-2">
+          <EmailListInput
+            v-model="destinatariosManuais"
+            label="Destinatários adicionais somente deste envio"
+            hint="Não serão gravados no cadastro do cliente."
+            :max="limiteDestinatariosManuais"
+          />
+        </div>
+        <div v-if="destinatariosEnvio.length" class="destinatarios-resumo mt-2">
+          <strong>Receberão este e-mail ({{ destinatariosEnvio.length }}):</strong>
+          <span v-for="email in destinatariosEnvio" :key="email.toLocaleLowerCase()">{{ email }}</span>
         </div>
       </div>
 
@@ -449,11 +596,12 @@ onMounted(async () => {
           <div v-if="mostrarCampoSenha" class="senha-pdf-box">
             <label>Senha do PDF *</label>
             <input
-              v-model="pdfSenha"
+              :value="pdfSenha"
               type="password"
               autocomplete="off"
               placeholder="Senha enviada pelo segurado/seguradora"
-              @keyup.enter="analisarArquivo"
+              @input="onSenhaInput"
+              @keydown.enter.prevent="analisarArquivo"
             />
             <button type="button" class="btn btn-ghost btn-sm mt-2" :disabled="analisando" @click="analisarArquivo">
               Aplicar senha e analisar
@@ -480,6 +628,50 @@ onMounted(async () => {
               <option value="">Sem tipo específico</option>
               <option v-for="t in tipos" :key="t.id" :value="t.codigo">{{ t.nome }}</option>
             </select>
+          </div>
+        </div>
+
+        <h4 class="mt-4 mb-2">Dados da proposta</h4>
+        <div class="row">
+          <div>
+            <label>Forma de pagamento</label>
+            <select v-model="formaPagamento">
+              <option value="">— não informada —</option>
+              <option value="À vista">À vista</option>
+              <option value="Boleto">Boleto</option>
+              <option value="Débito">Débito</option>
+              <option value="Cartão">Cartão</option>
+            </select>
+          </div>
+          <div>
+            <label>Parcelamento</label>
+            <select v-model="parcelamento">
+              <option :value="null">— não informado —</option>
+              <option v-for="quantidade in 12" :key="quantidade" :value="quantidade">
+                {{ quantidade === 1 ? '1 vez' : quantidade + ' vezes' }}
+              </option>
+            </select>
+          </div>
+          <div>
+            <label>Nº da proposta</label>
+            <input v-model="numeroProposta" maxlength="100" />
+          </div>
+          <div>
+            <label>Item segurado</label>
+            <input
+              v-model="itemSegurado"
+              list="itens-segurados"
+              maxlength="150"
+              placeholder="Ex.: veículo, trator, colheitadeira"
+            />
+            <datalist id="itens-segurados">
+              <option value="Veículo" />
+              <option value="Trator" />
+              <option value="Colheitadeira" />
+              <option value="Escavadeira" />
+              <option value="Imóvel" />
+              <option value="Máquina agrícola" />
+            </datalist>
           </div>
         </div>
 
@@ -516,6 +708,36 @@ onMounted(async () => {
               <option v-for="a in assinaturas" :key="a.id" :value="a.id">{{ a.nome }}</option>
             </select>
           </div>
+        </div>
+
+        <div class="capas-envio mt-4">
+          <div class="flex items-center gap-2 mb-2">
+            <h4 class="m-0">Composição do PDF</h4>
+            <span class="spacer" />
+            <button type="button" class="btn btn-ghost btn-sm" @click="restaurarCapasDoTipo">
+              Restaurar padrão do tipo
+            </button>
+          </div>
+          <p class="text-muted m-0 mb-2">
+            Escolha vários padrões e organize a ordem. A apólice ficará entre os dois grupos.
+            <RouterLink to="/capa">Gerenciar biblioteca</RouterLink>
+          </p>
+          <div class="capas-envio-grid">
+            <CapaOrderSelector
+              v-model="capasIniciaisIds"
+              :capas="capas"
+              label="Antes da apólice"
+            />
+            <CapaOrderSelector
+              v-model="capasFinaisIds"
+              :capas="capas"
+              label="Depois da apólice (capa final)"
+            />
+          </div>
+          <p class="ordem-pdf text-muted m-0 mt-2">
+            Ordem final:
+            {{ [...nomesCapas(capasIniciaisIds), arquivo?.name || 'apólice.pdf', ...nomesCapas(capasFinaisIds)].join(' → ') }}
+          </p>
         </div>
 
         <div v-if="pdfPreviewUrl || analisando || analise" class="pdf-preview-panel mt-4">
@@ -596,13 +818,23 @@ onMounted(async () => {
     <div v-if="mostrarConfirmacao" class="modal-backdrop" @click.self="fecharConfirmacao">
       <div class="modal-card" role="dialog" aria-labelledby="confirmar-envio-titulo">
         <h3 id="confirmar-envio-titulo">Confirmar envio</h3>
-        <p>Verifique o destinatário antes de enviar a apólice:</p>
+        <p>Verifique todos os destinatários antes de enviar a apólice:</p>
         <p><strong>Cliente:</strong> {{ nomeDestino || '—' }}</p>
-        <p class="confirm-email">{{ emailDestino }}</p>
+        <ul class="confirm-email-list">
+          <li v-for="email in destinatariosEnvio" :key="email.toLocaleLowerCase()">{{ email }}</li>
+        </ul>
         <p><strong>Assunto:</strong> {{ assuntoPrevisto }}</p>
+        <p v-if="formaPagamento || parcelamento || numeroProposta || itemSegurado">
+          <strong>Proposta:</strong>
+          {{ [numeroProposta, itemSegurado, formaPagamento, rotuloParcelamento(parcelamento)].filter(Boolean).join(' · ') }}
+        </p>
+        <p>
+          <strong>PDF:</strong>
+          {{ capasIniciaisIds.length }} capa(s) antes · apólice · {{ capasFinaisIds.length }} capa(s) depois
+        </p>
         <label style="display: flex; align-items: flex-start; gap: 0.5rem; font-weight: 500; margin-top: 1rem">
           <input v-model="confirmouEmail" type="checkbox" />
-          Confirmo que o e-mail acima está correto
+          Confirmo que todos os e-mails acima estão corretos
         </label>
         <div class="flex gap-2 mt-4">
           <button
@@ -611,7 +843,7 @@ onMounted(async () => {
             :disabled="enviando || !confirmouEmail"
             @click="confirmarEEnviar"
           >
-            {{ enviando ? 'Enviando…' : 'Enviar para este e-mail' }}
+            {{ enviando ? 'Enviando…' : 'Enviar para estes destinatários' }}
           </button>
           <button type="button" class="btn btn-ghost" @click="fecharConfirmacao">Voltar</button>
         </div>
@@ -677,5 +909,43 @@ onMounted(async () => {
   display: grid;
   gap: 0.35rem;
   font-size: 0.9rem;
+}
+.destinatarios-resumo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  padding: 0.65rem;
+  border-radius: var(--radius);
+  background: var(--terra-50);
+}
+.destinatarios-resumo span {
+  padding: 0.2rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
+  font-size: 0.82rem;
+}
+.capas-envio {
+  padding: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--terra-50);
+}
+.capas-envio-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+.ordem-pdf { overflow-wrap: anywhere; }
+.confirm-email-list {
+  padding: 0.65rem 0.65rem 0.65rem 2rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--terra-50);
+  font-weight: 700;
+}
+@media (max-width: 850px) {
+  .capas-envio-grid { grid-template-columns: 1fr; }
 }
 </style>

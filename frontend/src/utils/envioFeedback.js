@@ -51,14 +51,26 @@ export function destinatarioDoEnvio(envio, fallback = '') {
 }
 
 export function destinatarioAtualDoCliente(envio) {
+  if (Array.isArray(envio?.cliente_destinatarios_atuais)) {
+    return envio.cliente_destinatarios_atuais.filter(Boolean).join(', ')
+  }
   return String(envio?.cliente_email_atual || '').trim()
 }
 
+function conjuntoDestinatarios(valor) {
+  const itens = Array.isArray(valor) ? valor : String(valor || '').split(/[;,]/)
+  return [...new Set(itens.map((item) => String(item).trim().toLowerCase()).filter(Boolean))]
+    .sort()
+    .join(',')
+}
+
 export function destinatarioFoiAlterado(envio) {
-  const snapshot = String(envio?.destinatario_email || envio?.cliente_email || '')
-    .trim()
-    .toLowerCase()
-  const atual = destinatarioAtualDoCliente(envio).toLowerCase()
+  const snapshot = conjuntoDestinatarios(
+    envio?.destinatarios || envio?.destinatario_email || envio?.cliente_email,
+  )
+  const atual = conjuntoDestinatarios(
+    envio?.cliente_destinatarios_atuais || envio?.cliente_email_atual,
+  )
   return Boolean(snapshot && atual && snapshot !== atual)
 }
 

@@ -1,14 +1,21 @@
-"""Gestão da capa (PDF que vai antes da apólice em todo envio)."""
+"""Compatibilidade com a antiga rota de capa global.
+
+Novas telas usam ``/api/capas``. Um upload legado e importado para a biblioteca,
+mas nunca passa a valer automaticamente para todos os PDFs.
+"""
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pypdf import PdfReader
+from sqlalchemy.orm import Session
 
 from ..config import settings
 from .. import schemas
 from ..auth import require_user, require_admin
+from ..database import get_db
+from ..services import capa_service
 from ..services.upload_service import save_upload
 
 
@@ -56,13 +63,13 @@ def visualizar(_=Depends(require_user)):
     return FileResponse(str(p), media_type="application/pdf", filename=p.name)
 
 
-@router.post("", response_model=schemas.CapaInfoOut)
+@router.post("", response_model=schemas.CapaInfoOut, deprecated=True)
 async def upload(
     arquivo: UploadFile = File(...),
+    db: Session = Depends(get_db),
     _=Depends(require_admin),
 ):
-    """Upload de qualquer PDF; é renomeado automaticamente para `capa.pdf`
-    (ou o que estiver em CAPA_ARQUIVO_PADRAO) para bater com o .env."""
+    """Importa um upload antigo como modelo selecionavel da biblioteca."""
     pasta = settings.data_path(settings.capa_folder)
     pasta.mkdir(parents=True, exist_ok=True)
     destino = _caminho_capa()
@@ -72,6 +79,7 @@ async def upload(
         kind="pdf",
         allowed_suffixes={".pdf"},
     )
+    capa_service.importar_capa_legada(db)
     return _info_atual()
 
 

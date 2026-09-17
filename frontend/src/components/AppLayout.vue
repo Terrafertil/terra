@@ -108,7 +108,7 @@ onUnmounted(() => {
         <RouterLink v-if="mostrarAdministracao" class="nav-link" to="/corpos-email">Corpos de E-mail</RouterLink>
         <RouterLink v-if="mostrarAdministracao" class="nav-link" to="/assuntos">Assuntos</RouterLink>
         <RouterLink v-if="mostrarAdministracao" class="nav-link" to="/assinaturas">Assinaturas</RouterLink>
-        <RouterLink v-if="mostrarAdministracao" class="nav-link" to="/capa">Capa</RouterLink>
+        <RouterLink v-if="mostrarAdministracao" class="nav-link" to="/capa">Capas</RouterLink>
         <RouterLink v-if="mostrarBackup" class="nav-link" to="/backup">Backup</RouterLink>
         <RouterLink class="nav-link" to="/historico">Histórico</RouterLink>
         <RouterLink v-if="mostrarUsuarios" class="nav-link" to="/usuarios">Usuários</RouterLink>

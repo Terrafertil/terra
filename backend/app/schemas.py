@@ -7,6 +7,9 @@ from pydantic import BaseModel, EmailStr, Field, ConfigDict
 class ClienteBase(BaseModel):
     nome: str
     email: EmailStr
+    # O limite operacional e de 20 destinatarios por mensagem; um deles e
+    # sempre o e-mail principal do cliente.
+    destinatarios_adicionais: list[EmailStr] = Field(default_factory=list, max_length=19)
     cpf: str | None = None
     cnpj: str | None = None
     telefone: str | None = None
@@ -21,6 +24,7 @@ class ClienteCreate(ClienteBase):
 class ClienteUpdate(BaseModel):
     nome: str | None = None
     email: EmailStr | None = None
+    destinatarios_adicionais: list[EmailStr] | None = Field(None, max_length=19)
     cpf: str | None = None
     cnpj: str | None = None
     telefone: str | None = None
@@ -85,6 +89,8 @@ class TipoEnvioBase(BaseModel):
     na_fila_full: bool = True
     corpo_email_id: int | None = None
     assunto_email_id: int | None = None
+    capas_iniciais_ids: list[int] = Field(default_factory=list, max_length=10)
+    capas_finais_ids: list[int] = Field(default_factory=list, max_length=10)
     ativo: bool = True
 
 
@@ -100,6 +106,8 @@ class TipoEnvioUpdate(BaseModel):
     na_fila_full: bool | None = None
     corpo_email_id: int | None = None
     assunto_email_id: int | None = None
+    capas_iniciais_ids: list[int] | None = Field(None, max_length=10)
+    capas_finais_ids: list[int] | None = Field(None, max_length=10)
     ativo: bool | None = None
 
 
@@ -215,6 +223,12 @@ class AssinaturaOut(AssinaturaBase):
 
 
 # ========= Envio =========
+class CapaSnapshotOut(BaseModel):
+    id: int | None = None
+    nome: str
+    sha256: str | None = None
+
+
 class EnvioOut(BaseModel):
     id: int
     cliente_id: int
@@ -222,12 +236,21 @@ class EnvioOut(BaseModel):
     cliente_email: str | None = None
     cliente_email_atual: str | None = None
     destinatario_email: str | None = None
+    destinatarios: list[str] = Field(default_factory=list)
+    destinatarios_manuais: list[str] = Field(default_factory=list)
+    cliente_destinatarios_atuais: list[str] = Field(default_factory=list)
     tipo_envio: str
     tipo_codigo: str | None = None
     nome_arquivo_original: str | None = None
     nome_arquivo_final: str | None = None
     nome_boleto: str | None = None
     numero_apolice: str | None = None
+    forma_pagamento: str | None = None
+    parcelamento: int | None = None
+    numero_proposta: str | None = None
+    item_segurado: str | None = None
+    capas_iniciais: list["CapaSnapshotOut"] = Field(default_factory=list)
+    capas_finais: list["CapaSnapshotOut"] = Field(default_factory=list)
     status: str
     erro_msg: str | None = None
     pode_reenviar: bool = False
@@ -363,6 +386,8 @@ class StatusOut(BaseModel):
     email_provider: str = "brevo"
     email_configured: bool = False
     webhook_configured: bool = False
+    smtp_from_name: str = ""
+    email_subject_default: str = ""
     full_enabled: bool
     full_env_enabled: bool
     full_scan_active: bool
@@ -476,6 +501,26 @@ class PdfAnaliseOut(BaseModel):
 
 
 # ========= Capa =========
+class CapaModeloOut(BaseModel):
+    id: int
+    nome: str
+    descricao: str | None = None
+    nome_original: str | None = None
+    tamanho_bytes: int = 0
+    paginas: int = 0
+    sha256: str | None = None
+    ativo: bool = True
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CapaModeloUpdate(BaseModel):
+    nome: str | None = Field(None, min_length=1, max_length=120)
+    descricao: str | None = Field(None, max_length=255)
+    ativo: bool | None = None
+
+
 class CapaInfoOut(BaseModel):
     existe: bool
     nome: str

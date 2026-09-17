@@ -120,6 +120,17 @@ class EnvioRuntimeMigrationTests(unittest.TestCase):
                     corpo_id = connection.execute(
                         text("SELECT id FROM corpos_email WHERE nome = 'Corpo Auto'")
                     ).scalar_one()
+                    # Simula de fato o schema na revisão 0002, antes das novas
+                    # colunas do compositor (Base.metadata já representa o head).
+                    connection.execute(text("DROP TABLE envios"))
+                    connection.execute(
+                        text(
+                            "CREATE TABLE envios ("
+                            "id INTEGER PRIMARY KEY, cliente_id INTEGER NOT NULL, "
+                            "tipo_envio VARCHAR(20) NOT NULL, "
+                            "destinatario_email VARCHAR(1024), reenvio_de_id INTEGER)"
+                        )
+                    )
                     connection.execute(text("DROP TABLE tipos_envio"))
                     connection.execute(text("DROP TABLE assuntos_email"))
                     connection.execute(
@@ -165,16 +176,33 @@ class EnvioRuntimeMigrationTests(unittest.TestCase):
             try:
                 inspector = inspect(migrated)
                 self.assertIn("assuntos_email", inspector.get_table_names())
+                self.assertIn("capas_modelos", inspector.get_table_names())
                 self.assertIn(
                     "assunto_email_id",
                     {column["name"] for column in inspector.get_columns("tipos_envio")},
+                )
+                self.assertTrue(
+                    {
+                        "forma_pagamento",
+                        "parcelamento",
+                        "numero_proposta",
+                        "item_segurado",
+                        "capas_iniciais_json",
+                        "capas_finais_json",
+                        "destinatarios_manuais_qtd",
+                    }.issubset(
+                        {
+                            column["name"]
+                            for column in inspector.get_columns("envios")
+                        }
+                    )
                 )
                 with migrated.connect() as connection:
                     self.assertEqual(
                         connection.execute(
                             text("SELECT version_num FROM alembic_version")
                         ).scalar_one(),
-                        "20260811_0003",
+                        "20260825_0004",
                     )
                     self.assertEqual(
                         connection.execute(

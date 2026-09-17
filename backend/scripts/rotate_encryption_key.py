@@ -13,7 +13,15 @@ from app.config import BASE_DIR, settings
 from app.services import data_crypto_service as crypto
 
 
-SENSITIVE_FIELDS = ("nome", "email", "cpf", "cnpj", "telefone", "observacoes")
+SENSITIVE_FIELDS = (
+    "nome",
+    "email",
+    "cpf",
+    "cnpj",
+    "telefone",
+    "observacoes",
+    "destinatarios_adicionais_json",
+)
 
 
 def _database_path() -> Path:
@@ -155,7 +163,8 @@ def main() -> None:
             connection.execute("BEGIN IMMEDIATE")
             connection.executemany(
                 "UPDATE clientes SET nome=?, email=?, cpf=?, cnpj=?, telefone=?, "
-                "observacoes=?, cpf_hash=?, cnpj_hash=?, email_hash=? WHERE id=?",
+                "observacoes=?, destinatarios_adicionais_json=?, cpf_hash=?, "
+                "cnpj_hash=?, email_hash=? WHERE id=?",
                 encrypted_rows,
             )
             if destinatarios_encrypted:

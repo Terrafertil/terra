@@ -12,7 +12,15 @@ from .. import models
 from . import data_crypto_service as crypto
 
 
-_SENSITIVE = ("nome", "email", "cpf", "cnpj", "telefone", "observacoes")
+_SENSITIVE = (
+    "nome",
+    "email",
+    "cpf",
+    "cnpj",
+    "telefone",
+    "observacoes",
+    "destinatarios_adicionais_json",
+)
 
 
 def _norm_digits(val: str | None) -> str:
@@ -32,9 +40,14 @@ def encrypt_cliente_fields(c: models.Cliente) -> None:
         if s.startswith(crypto.ENC_PREFIX) or s.startswith(crypto.SOC_PREFIX):
             continue
         plain[f] = val
-    c.cpf_hash = crypto.field_hash(plain.get("cpf"), "cpf")
-    c.cnpj_hash = crypto.field_hash(plain.get("cnpj"), "cnpj")
-    c.email_hash = crypto.field_hash(plain.get("email"), "email")
+    # Em um segundo before_update os campos podem ja estar cifrados. Nessa
+    # situacao nao apague hashes validos por falta de plaintext nesta chamada.
+    if "cpf" in plain:
+        c.cpf_hash = crypto.field_hash(plain["cpf"], "cpf")
+    if "cnpj" in plain:
+        c.cnpj_hash = crypto.field_hash(plain["cnpj"], "cnpj")
+    if "email" in plain:
+        c.email_hash = crypto.field_hash(plain["email"], "email")
     for field in _SENSITIVE:
         val = plain.get(field)
         if val is None:
@@ -171,9 +184,10 @@ def list_clientes(
             if h:
                 clauses.append(models.Cliente.cnpj_hash == h)
         if "@" in email_l:
-            h = crypto.field_hash(email_l, "email")
-            if h:
-                clauses.append(models.Cliente.email_hash == h)
+            # Os adicionais ficam cifrados como uma lista e nao possuem hash
+            # individual. A busca por e-mail precisa passar pelo fallback em
+            # memoria para considerar tanto o principal quanto os adicionais.
+            clauses = []
         if clauses:
             query = query.filter(or_(*clauses))
             rows = query.all()
@@ -187,6 +201,7 @@ def list_clientes(
             for c in decrypted
             if t in (c.nome or "").lower()
             or t in (c.email or "").lower()
+            or any(t in email.lower() for email in c.destinatarios_adicionais)
             or t in (c.cpf or "")
             or t in (c.cnpj or "")
         ]
@@ -197,6 +212,7 @@ def list_clientes(
             or_(
                 models.Cliente.nome.ilike(ilike),
                 models.Cliente.email.ilike(ilike),
+                models.Cliente.destinatarios_adicionais_json.ilike(ilike),
                 models.Cliente.cpf.ilike(ilike),
                 models.Cliente.cnpj.ilike(ilike),
             )

@@ -13,9 +13,12 @@ import logging
 import base64
 import hashlib
 import hmac
+import json
 import mimetypes
+import re
 import shutil
 import tempfile
+import unicodedata
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -27,7 +30,15 @@ from sqlalchemy.exc import IntegrityError
 
 from .. import models
 from ..config import settings
-from . import email_service, backup_service, pdf_service, soc_service, file_provenance
+from . import (
+    email_service,
+    backup_service,
+    pdf_service,
+    soc_service,
+    file_provenance,
+    destinatarios_service,
+    capa_service,
+)
 
 
 log = logging.getLogger(__name__)
@@ -49,7 +60,11 @@ FALHAS_ENTREGA_NAO_REENVIAVEIS = frozenset({"spam", "unsubscribed"})
 
 def _normalizar_email_destinatario(email: str | None) -> str:
     """Forma estável usada apenas para comparar destinatários."""
-    return (email or "").strip().casefold()
+    if not email:
+        return ""
+    return destinatarios_service.chave_canonica(
+        destinatarios_service.do_snapshot(email)
+    )
 
 
 def _falha_de_entrega(envio: models.Envio) -> bool:
@@ -156,6 +171,7 @@ def _chave_idempotencia(
     destinatario_email: str,
     tipo_envio: str,
     tipo_codigo: str | None,
+    capas_fingerprint: str = "",
 ) -> str:
     raw = ":".join(
         [
@@ -167,6 +183,8 @@ def _chave_idempotencia(
             tipo_codigo or "",
         ]
     )
+    if capas_fingerprint:
+        raw = f"{raw}:capas={capas_fingerprint}"
     segredo = (settings.secret_key or "").encode("utf-8")
     return hmac.new(
         segredo,
@@ -268,32 +286,41 @@ def _copiar_para_recuperacao(
         return None
 
 
-def _resolver_caminho_capa() -> Path | None:
-    if not settings.capa_enabled:
-        return None
-    capa = settings.data_path(settings.capa_folder) / settings.capa_arquivo_padrao
-    if capa.is_file():
-        log.info("Capa a usar: %s", capa)
-        return capa
-    log.info("Capa não aplicada (ficheiro inexistente): %s", capa)
-    return None
+def _remover_temporario(path: Path | None) -> None:
+    """Limpeza best-effort que nunca mascara o resultado do envio."""
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        log.warning("Nao foi possivel remover arquivo temporario %s: %s", path, exc)
 
 
-def _preparar_pdf_final(original: Path) -> tuple[Path, str, Path | None]:
-    capa = _resolver_caminho_capa()
-    if not capa:
+def _preparar_pdf_final(
+    original: Path,
+    *,
+    capas_iniciais: list[models.CapaModelo] | None = None,
+    capas_finais: list[models.CapaModelo] | None = None,
+) -> tuple[Path, str, Path | None]:
+    iniciais = list(capas_iniciais or [])
+    finais = list(capas_finais or [])
+    if not iniciais and not finais:
         return original, original.name, None
     tmp = Path(tempfile.gettempdir()) / f"envio_mesclado_{uuid.uuid4().hex}.pdf"
     try:
-        pdf_service.mesclar_capa_e_apolice(capa, original, tmp)
-        nome = f"com_capa_{original.name}"
-        log.info("PDF mesclado com capa: %s + %s -> %s", capa.name, original.name, nome)
+        partes = [
+            *(capa_service.caminho_arquivo(capa) for capa in iniciais),
+            original,
+            *(capa_service.caminho_arquivo(capa) for capa in finais),
+        ]
+        pdf_service.mesclar_pdfs(partes, tmp)
+        nome = f"com_capas_{original.name}"
+        log.info("PDF composto com %s capa(s): %s", len(iniciais) + len(finais), nome)
         return tmp, nome, tmp
     except Exception as e:
-        log.exception("Junção com capa falhou; usa PDF original. Erro: %s", e)
-        if tmp.exists():
-            tmp.unlink(missing_ok=True)
-        return original, original.name, None
+        log.exception("Falha ao montar PDF com capas: %s", e)
+        _remover_temporario(tmp)
+        raise ValueError(f"Não foi possível montar o PDF com as capas selecionadas: {e}") from e
 
 
 def _resolver_tipo_envio(
@@ -337,12 +364,55 @@ def _formatar_assunto(
     numero_apolice: str | None,
     *,
     custom: str | None = None,
+    contexto: dict[str, Any] | None = None,
 ) -> str:
     template = custom.strip() if isinstance(custom, str) and custom.strip() else None
-    assunto = email_service.formatar_assunto(numero_apolice, custom=template).strip()
+    assunto = email_service.formatar_assunto(
+        numero_apolice, custom=template, contexto=contexto
+    ).strip()
     if "\r" in assunto or "\n" in assunto:
         raise ValueError("O assunto do e-mail nao pode conter quebra de linha")
+    if len(assunto) > 500:
+        raise ValueError("O assunto do e-mail excede 500 caracteres")
     return assunto
+
+
+def _normalizar_texto_envio(
+    valor: str | None,
+    *,
+    campo: str,
+    limite: int,
+) -> str | None:
+    texto = (valor or "").strip()
+    if len(texto) > limite:
+        raise ValueError(f"{campo} deve ter no maximo {limite} caracteres")
+    return texto or None
+
+
+def _normalizar_forma_pagamento(valor: str | None) -> str | None:
+    texto = _normalizar_texto_envio(
+        valor, campo="Forma de pagamento", limite=40
+    )
+    if texto is None:
+        return None
+    chave = "".join(
+        caractere
+        for caractere in unicodedata.normalize("NFKD", texto.casefold())
+        if not unicodedata.combining(caractere)
+    )
+    chave = re.sub(r"[\s_-]+", " ", chave).strip()
+    formas = {
+        "a vista": "À vista",
+        "avista": "À vista",
+        "boleto": "Boleto",
+        "debito": "Débito",
+        "cartao": "Cartão",
+    }
+    if chave not in formas:
+        raise ValueError(
+            "Forma de pagamento deve ser À vista, Boleto, Débito ou Cartão"
+        )
+    return formas[chave]
 
 
 def _resolver_assinatura(
@@ -368,7 +438,17 @@ def _montar_contexto(
     numero_apolice: str | None,
     tipo_envio: str,
     tipo_codigo: str | None,
+    forma_pagamento: str | None = None,
+    parcelamento: int | None = None,
+    numero_proposta: str | None = None,
+    item_segurado: str | None = None,
+    seguradora: str | None = None,
+    produto: str | None = None,
+    layout_apolice: str | None = None,
 ) -> dict[str, Any]:
+    parcelas = ""
+    if parcelamento:
+        parcelas = "1 vez" if parcelamento == 1 else f"{parcelamento} vezes"
     return {
         # Cliente
         "nome": cliente.nome or "",
@@ -381,9 +461,14 @@ def _montar_contexto(
         "tipo_envio": tipo_envio,
         "tipo_codigo": tipo_codigo or "",
         "data_envio": datetime.now().strftime("%d/%m/%Y"),
-        "seguradora": "",
-        "produto": "",
-        "layout_apolice": "",
+        "seguradora": seguradora or "",
+        "produto": produto or "",
+        "layout_apolice": layout_apolice or "",
+        # Proposta / pagamento
+        "forma_pagamento": forma_pagamento or "",
+        "parcelamento": parcelas,
+        "numero_proposta": numero_proposta or "",
+        "item_segurado": item_segurado or produto or "",
         # Auto
         "placa": (auto.placa if auto else "") or "",
         "marca": (auto.marca if auto else "") or "",
@@ -418,6 +503,14 @@ def renderizar_demonstracao(
     tipo_codigo: str | None = None,
     assinatura_id: int | None = None,
     corpo_email_id: int | None = None,
+    destinatarios_adicionais: list[str] | None = None,
+    forma_pagamento: str | None = None,
+    parcelamento: int | None = None,
+    numero_proposta: str | None = None,
+    item_segurado: str | None = None,
+    seguradora: str | None = None,
+    produto: str | None = None,
+    layout_apolice: str | None = None,
 ) -> dict[str, Any]:
     """Gera dict com os dados que apareceriam no e-mail (assunto + html), sem enviar."""
     corpo = None
@@ -441,6 +534,13 @@ def renderizar_demonstracao(
         numero_apolice=numero_apolice,
         tipo_envio=tipo_envio,
         tipo_codigo=tipo_codigo,
+        forma_pagamento=forma_pagamento,
+        parcelamento=parcelamento,
+        numero_proposta=numero_proposta,
+        item_segurado=item_segurado,
+        seguradora=seguradora,
+        produto=produto,
+        layout_apolice=layout_apolice,
     )
 
     assunto = _formatar_assunto(
@@ -448,6 +548,7 @@ def renderizar_demonstracao(
         custom=_resolver_template_assunto(
             db, tipo_codigo=tipo_codigo, corpo=corpo
         ),
+        contexto=ctx,
     )
     html = email_service.renderizar_template(
         contexto=ctx,
@@ -461,7 +562,9 @@ def renderizar_demonstracao(
             html = html.replace(f"cid:{cid}", data_uri)
     return {
         "de": f"{settings.smtp_from_name} <{settings.smtp_from_email}>",
-        "para": cliente.email,
+        "para": destinatarios_service.snapshot(
+            destinatarios_service.do_cliente(cliente, destinatarios_adicionais)
+        ),
         "assunto": assunto,
         "html": html,
     }
@@ -486,6 +589,16 @@ def processar_envio(
     arquivo_colocado_por: str | None = None,
     boleto_path: str | Path | None = None,
     boleto_nome_original: str | None = None,
+    destinatarios_adicionais: list[str] | None = None,
+    forma_pagamento: str | None = None,
+    parcelamento: int | None = None,
+    numero_proposta: str | None = None,
+    item_segurado: str | None = None,
+    seguradora: str | None = None,
+    produto: str | None = None,
+    layout_apolice: str | None = None,
+    capas_iniciais_ids: list[int] | None = None,
+    capas_finais_ids: list[int] | None = None,
 ) -> models.Envio:
     if soc_service.is_soc_locked(db):
         raise ValueError(soc_service.SOC_BLOCK_MSG)
@@ -493,9 +606,32 @@ def processar_envio(
     caminho_pdf = Path(caminho_pdf)
     boleto = Path(boleto_path) if boleto_path else None
     tipo_envio_normalizado = (tipo_envio or "").strip().upper()
-    destinatario_email = (cliente.email or "").strip()
-    if not destinatario_email:
-        raise ValueError("Cliente sem e-mail de destinatário")
+    forma_pagamento = _normalizar_forma_pagamento(forma_pagamento)
+    numero_proposta = _normalizar_texto_envio(
+        numero_proposta, campo="Numero da proposta", limite=100
+    )
+    item_segurado = _normalizar_texto_envio(
+        item_segurado, campo="Item segurado", limite=150
+    )
+    if parcelamento is not None and not 1 <= int(parcelamento) <= 12:
+        raise ValueError("Parcelamento deve estar entre 1 e 12 vezes")
+    parcelamento = int(parcelamento) if parcelamento is not None else None
+    destinatarios_fixos = destinatarios_service.do_cliente(cliente)
+    destinatarios = destinatarios_service.combinar(
+        destinatarios_fixos, destinatarios_adicionais
+    )
+    chaves_fixas = {email.casefold() for email in destinatarios_fixos}
+    destinatarios_manuais_qtd = sum(
+        email.casefold() not in chaves_fixas for email in destinatarios
+    )
+    destinatario_email = destinatarios_service.snapshot(destinatarios)
+    capas_iniciais, capas_finais = capa_service.resolver_listas(
+        db,
+        tipo_codigo=tipo_codigo,
+        capas_iniciais_ids=capas_iniciais_ids,
+        capas_finais_ids=capas_finais_ids,
+    )
+    capas_fingerprint = capa_service.fingerprint(capas_iniciais, capas_finais)
     arquivo_hash = _arquivo_sha256(caminho_pdf)
     boleto_hash = _arquivo_sha256(boleto) if boleto and boleto.is_file() else ""
     # Envios MANUAIS são uma ordem explícita do operador e nunca devem ser
@@ -509,6 +645,7 @@ def processar_envio(
             destinatario_email=destinatario_email,
             tipo_envio=tipo_envio_normalizado,
             tipo_codigo=tipo_codigo,
+            capas_fingerprint=capas_fingerprint,
         )
         existente = _envio_existente_idempotente(
             db,
@@ -518,13 +655,9 @@ def processar_envio(
         if existente:
             return existente
 
-    temp_desbloqueio: Path | None = None
-    temp_mesclado: Path | None = None
-    pdf_uso, temp_desbloqueio = pdf_service.garantir_pdf_desbloqueado(
-        caminho_pdf, senha=pdf_senha
-    )
-    pdf_final, nome_final, temp_mesclado = _preparar_pdf_final(pdf_uso)
-    # Corpo de e-mail: override > tipo > template padrão
+    # Resolva configuracoes e snapshots antes de criar qualquer PDF temporario.
+    # Assim uma indisponibilidade do banco ou um modelo invalido nao deixa uma
+    # apolice descriptografada esquecida no diretorio temporario.
     corpo: models.CorpoEmail | None = None
     if corpo_email_id:
         corpo = db.get(models.CorpoEmail, corpo_email_id)
@@ -548,12 +681,29 @@ def processar_envio(
         )
         uid = usuario_envio.id
     elif tipo_envio_normalizado == "FULL":
-        enviado_por = "FULL (automático)"
+        enviado_por = "FULL (automatico)"
         uid = None
     else:
         enviado_por = None
         uid = None
 
+    snapshots_iniciais = capa_service.snapshots(capas_iniciais)
+    snapshots_finais = capa_service.snapshots(capas_finais)
+
+    temp_desbloqueio: Path | None = None
+    temp_mesclado: Path | None = None
+    try:
+        pdf_uso, temp_desbloqueio = pdf_service.garantir_pdf_desbloqueado(
+            caminho_pdf, senha=pdf_service.normalizar_senha_pdf(pdf_senha)
+        )
+        pdf_final, nome_final, temp_mesclado = _preparar_pdf_final(
+            pdf_uso,
+            capas_iniciais=capas_iniciais,
+            capas_finais=capas_finais,
+        )
+    except Exception:
+        _remover_temporario(temp_desbloqueio)
+        raise
     envio = models.Envio(
         cliente_id=cliente.id,
         tipo_envio=tipo_envio_normalizado,
@@ -562,7 +712,14 @@ def processar_envio(
         nome_arquivo_final=nome_final,
         nome_boleto=(Path(boleto_nome_original).name if boleto_nome_original else None),
         numero_apolice=numero_apolice,
+        forma_pagamento=forma_pagamento,
+        parcelamento=parcelamento,
+        numero_proposta=numero_proposta,
+        item_segurado=item_segurado,
+        capas_iniciais_json=json.dumps(snapshots_iniciais, ensure_ascii=False),
+        capas_finais_json=json.dumps(snapshots_finais, ensure_ascii=False),
         destinatario_email=destinatario_email,
+        destinatarios_manuais_qtd=destinatarios_manuais_qtd,
         status="pendente",
         arquivo_sha256=arquivo_hash,
         idempotency_key=idempotency_key,
@@ -575,8 +732,11 @@ def processar_envio(
     db.add(envio)
     try:
         db.commit()
+        db.refresh(envio)
     except IntegrityError:
         db.rollback()
+        _remover_temporario(temp_mesclado)
+        _remover_temporario(temp_desbloqueio)
         if idempotency_key:
             existente = _envio_existente_idempotente(
                 db,
@@ -584,13 +744,13 @@ def processar_envio(
                 destinatario_email=destinatario_email,
             )
             if existente:
-                if temp_mesclado is not None:
-                    temp_mesclado.unlink(missing_ok=True)
-                if temp_desbloqueio is not None:
-                    temp_desbloqueio.unlink(missing_ok=True)
                 return existente
         raise
-    db.refresh(envio)
+    except Exception:
+        db.rollback()
+        _remover_temporario(temp_mesclado)
+        _remover_temporario(temp_desbloqueio)
+        raise
 
     etapa = "backup"
     try:
@@ -615,6 +775,13 @@ def processar_envio(
             numero_apolice=numero_apolice,
             tipo_envio=tipo_envio_normalizado,
             tipo_codigo=tipo_codigo,
+            forma_pagamento=envio.forma_pagamento,
+            parcelamento=envio.parcelamento,
+            numero_proposta=envio.numero_proposta,
+            item_segurado=envio.item_segurado,
+            seguradora=seguradora,
+            produto=produto,
+            layout_apolice=layout_apolice,
         )
         assunto_explicito = (
             assunto_customizado.strip()
@@ -629,6 +796,7 @@ def processar_envio(
                     db, tipo_codigo=tipo_codigo, corpo=corpo
                 )
             ),
+            contexto=ctx,
         )
         corpo_html = email_service.renderizar_template(
             contexto=ctx,
@@ -647,7 +815,7 @@ def processar_envio(
             anexos.append(boleto)
             nomes_anexos.append(envio.nome_boleto or "boleto.pdf")
         message_id = email_service.enviar_email(
-            destinatario=destinatario_email,
+            destinatario=destinatarios,
             assunto=assunto,
             corpo_html=corpo_html,
             anexos=anexos,
@@ -685,10 +853,8 @@ def processar_envio(
                 )
                 envio.caminho_backup_boleto = str(recuperado_boleto or boleto)
     finally:
-        if temp_mesclado is not None:
-            temp_mesclado.unlink(missing_ok=True)
-        if temp_desbloqueio is not None:
-            temp_desbloqueio.unlink(missing_ok=True)
+        _remover_temporario(temp_mesclado)
+        _remover_temporario(temp_desbloqueio)
         db.commit()
         db.refresh(envio)
 
@@ -717,9 +883,24 @@ def reenviar_envio(
     cliente = db.get(models.Cliente, envio.cliente_id)
     if not cliente:
         raise ValueError("Cliente do envio não encontrado")
-    destinatario_email = (cliente.email or "").strip()
-    if not destinatario_email:
-        raise ValueError("Cliente sem e-mail de destinatário")
+    snapshot_anterior = destinatarios_service.do_snapshot(envio.destinatario_email)
+    qtd_manual_anterior = max(
+        0, int(getattr(envio, "destinatarios_manuais_qtd", 0) or 0)
+    )
+    adicionais_anteriores = (
+        snapshot_anterior[-qtd_manual_anterior:]
+        if qtd_manual_anterior
+        else []
+    )
+    destinatarios_fixos = destinatarios_service.do_cliente(cliente)
+    destinatarios = destinatarios_service.combinar(
+        destinatarios_fixos, adicionais_anteriores
+    )
+    chaves_fixas = {email.casefold() for email in destinatarios_fixos}
+    destinatarios_manuais_qtd = sum(
+        email.casefold() not in chaves_fixas for email in destinatarios
+    )
+    destinatario_email = destinatarios_service.snapshot(destinatarios)
 
     if not envio.caminho_backup:
         raise ValueError("Envio sem ficheiro de backup — não é possível reenviar")
@@ -736,6 +917,10 @@ def reenviar_envio(
     boleto_hash = _arquivo_sha256(boleto) if boleto else ""
     idempotency_key: str | None = None
     if (envio.tipo_envio or "").strip().upper() == "FULL":
+        capas_fingerprint = capa_service.fingerprint_snapshots_json(
+            envio.capas_iniciais_json,
+            envio.capas_finais_json,
+        )
         idempotency_key = _chave_idempotencia(
             arquivo_sha256=arquivo_hash,
             boleto_sha256=boleto_hash,
@@ -743,6 +928,7 @@ def reenviar_envio(
             destinatario_email=destinatario_email,
             tipo_envio="FULL",
             tipo_codigo=envio.tipo_codigo,
+            capas_fingerprint=capas_fingerprint,
         )
         dono_atual = (
             db.query(models.Envio)
@@ -792,7 +978,14 @@ def reenviar_envio(
         nome_arquivo_final=envio.nome_arquivo_final,
         nome_boleto=envio.nome_boleto,
         numero_apolice=envio.numero_apolice,
+        forma_pagamento=envio.forma_pagamento,
+        parcelamento=envio.parcelamento,
+        numero_proposta=envio.numero_proposta,
+        item_segurado=envio.item_segurado,
+        capas_iniciais_json=envio.capas_iniciais_json,
+        capas_finais_json=envio.capas_finais_json,
         destinatario_email=destinatario_email,
+        destinatarios_manuais_qtd=destinatarios_manuais_qtd,
         status="pendente",
         caminho_backup=envio.caminho_backup,
         caminho_backup_boleto=envio.caminho_backup_boleto,
@@ -826,6 +1019,10 @@ def reenviar_envio(
             numero_apolice=novo_envio.numero_apolice,
             tipo_envio=novo_envio.tipo_envio,
             tipo_codigo=novo_envio.tipo_codigo,
+            forma_pagamento=novo_envio.forma_pagamento,
+            parcelamento=novo_envio.parcelamento,
+            numero_proposta=novo_envio.numero_proposta,
+            item_segurado=novo_envio.item_segurado,
         )
         assunto = _formatar_assunto(
             novo_envio.numero_apolice,
@@ -835,6 +1032,7 @@ def reenviar_envio(
                     db, tipo_codigo=novo_envio.tipo_codigo, corpo=corpo
                 )
             ),
+            contexto=ctx,
         )
         corpo_html = email_service.renderizar_template(
             contexto=ctx,
@@ -847,7 +1045,7 @@ def reenviar_envio(
             anexos.append(boleto)
             nomes_anexos.append(novo_envio.nome_boleto or boleto.name)
         message_id = email_service.enviar_email(
-            destinatario=destinatario_email,
+            destinatario=destinatarios,
             assunto=assunto,
             corpo_html=corpo_html,
             anexos=anexos,

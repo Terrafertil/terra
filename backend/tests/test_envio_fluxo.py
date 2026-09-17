@@ -75,8 +75,13 @@ class EnvioFluxoTests(unittest.TestCase):
             patch.object(
                 envio_service.email_service,
                 "formatar_assunto",
-                side_effect=lambda numero_apolice, custom=None: (
-                    custom.format(numero_apolice=numero_apolice or "")
+                side_effect=lambda numero_apolice, custom=None, contexto=None: (
+                    custom.format_map(
+                        {
+                            "numero_apolice": numero_apolice or "",
+                            **(contexto or {}),
+                        }
+                    )
                     if custom
                     else "Assunto"
                 ),
@@ -104,6 +109,18 @@ class EnvioFluxoTests(unittest.TestCase):
         else:
             smtp.side_effect = smtp_side_effect
         return stack, backup, smtp
+
+    def test_forma_pagamento_e_canonizada_e_restrita_as_opcoes_da_tela(self):
+        self.assertEqual(
+            envio_service._normalizar_forma_pagamento(" a vista "),
+            "À vista",
+        )
+        self.assertEqual(
+            envio_service._normalizar_forma_pagamento("CARTAO"),
+            "Cartão",
+        )
+        with self.assertRaisesRegex(ValueError, "Forma de pagamento deve ser"):
+            envio_service._normalizar_forma_pagamento("Pix")
 
     def test_demonstracao_mostra_assinatura_abaixo_do_corpo(self):
         assinatura_path = self.temp_dir / "assinatura.png"
@@ -321,6 +338,89 @@ class EnvioFluxoTests(unittest.TestCase):
         self.assertEqual(primeiro.destinatario_email, "cliente@example.com")
         self.assertEqual(terceiro.destinatario_email, "corrigido@example.com")
 
+    def test_full_com_capa_reenvio_preserva_chave_e_deduplica_na_folha(self):
+        capa_path = self.temp_dir / "capa-inicial.pdf"
+        capa_path.write_bytes(b"%PDF-1.4\ncapa")
+        capa = models.CapaModelo(
+            nome="Capa inicial",
+            arquivo=capa_path.name,
+            sha256="a" * 64,
+            ativo=True,
+        )
+        self.db.add(capa)
+        self.db.flush()
+        tipo = models.TipoEnvio(codigo="auto", nome="Auto")
+        tipo.capas_iniciais_ids = [capa.id]
+        self.db.add(tipo)
+        self.db.commit()
+
+        stack, _backup, smtp = self._patch_fluxo()
+        with stack, patch.object(
+            envio_service.capa_service.settings,
+            "capa_folder",
+            str(self.temp_dir),
+        ):
+            raiz = envio_service.processar_envio(
+                self.db,
+                cliente=self.cliente,
+                caminho_pdf=self.pdf,
+                tipo_envio="FULL",
+                tipo_codigo="auto",
+            )
+            chave_original = raiz.idempotency_key
+            raiz.delivery_status = "hard_bounce"
+            self.db.commit()
+
+            folha = envio_service.reenviar_envio(self.db, raiz.id)
+            reapresentado = envio_service.processar_envio(
+                self.db,
+                cliente=self.cliente,
+                caminho_pdf=self.pdf,
+                tipo_envio="FULL",
+                tipo_codigo="auto",
+            )
+
+        self.assertTrue(str(raiz.idempotency_key).startswith("retired:"))
+        self.assertEqual(folha.idempotency_key, chave_original)
+        self.assertEqual(folha.capas_iniciais_json, raiz.capas_iniciais_json)
+        self.assertEqual(reapresentado.id, folha.id)
+        self.assertTrue(reapresentado.deduplicado)
+        self.assertEqual(smtp.call_count, 2)
+
+    def test_reenvio_preserva_destinatario_adicional_manual(self):
+        self.cliente.destinatarios_adicionais = ["financeiro@example.com"]
+        self.db.commit()
+        stack, _backup, smtp = self._patch_fluxo()
+        with stack:
+            raiz = envio_service.processar_envio(
+                self.db,
+                cliente=self.cliente,
+                caminho_pdf=self.pdf,
+                tipo_envio="MANUAL",
+                destinatarios_adicionais=["operador@example.com"],
+            )
+            raiz.status = "erro"
+            raiz.delivery_status = "hard_bounce"
+            raiz.caminho_backup = str(self.pdf)
+            self.cliente.email = "corrigido@example.com"
+            self.db.commit()
+
+            folha = envio_service.reenviar_envio(self.db, raiz.id)
+
+        self.assertEqual(
+            smtp.call_args.kwargs["destinatario"],
+            [
+                "corrigido@example.com",
+                "financeiro@example.com",
+                "operador@example.com",
+            ],
+        )
+        self.assertEqual(
+            folha.destinatario_email,
+            "corrigido@example.com, financeiro@example.com, operador@example.com",
+        )
+        self.assertEqual(folha.destinatarios_manuais_qtd, 1)
+
     def test_falha_backup_cria_copia_recuperavel_e_nao_chama_smtp(self):
         recovery_root = self.temp_dir / "uploads"
         stack, _backup, smtp = self._patch_fluxo(
@@ -418,7 +518,7 @@ class EnvioFluxoTests(unittest.TestCase):
         self.assertFalse(envio_service.envio_pode_reenviar(envio))
         self.assertEqual(smtp.call_count, 2)
         self.assertEqual(
-            smtp.call_args.kwargs["destinatario"], "corrigido@example.com"
+            smtp.call_args.kwargs["destinatario"], ["corrigido@example.com"]
         )
         self.assertEqual(
             smtp.call_args.kwargs["tracking_id"], f"envio_id:{atualizado.id}"
@@ -589,6 +689,17 @@ class EnvioFluxoTests(unittest.TestCase):
             patch.object(crypto.settings, "secret_key", "segredo-teste-com-32-caracteres-minimo"),
         ):
             crypto._derive_keys.cache_clear()
+            self.cliente.destinatarios_adicionais = ["financeiro@example.com"]
+            self.db.commit()
+            adicionais_raw = self.db.connection().exec_driver_sql(
+                "SELECT destinatarios_adicionais_json FROM clientes WHERE id=?",
+                (self.cliente.id,),
+            ).scalar_one()
+            self.assertTrue(adicionais_raw.startswith(crypto.ENC_PREFIX))
+            encontrados = cliente_crypto.list_clientes(
+                self.db, q="financeiro@example.com"
+            )
+            self.assertEqual([cliente.id for cliente in encontrados], [self.cliente.id])
             envio = models.Envio(
                 cliente_id=self.cliente.id,
                 tipo_envio="MANUAL",
@@ -636,6 +747,15 @@ class EnvioFluxoTests(unittest.TestCase):
             self.db.expire(self.cliente)
             self.assertEqual(envio.destinatario_email, "snapshot@example.com")
             self.assertEqual(self.cliente.email, "cliente@example.com")
+            self.assertEqual(
+                self.cliente.destinatarios_adicionais,
+                ["financeiro@example.com"],
+            )
+            self.assertTrue(self.cliente.email_hash)
+            self.assertEqual(
+                cliente_crypto.list_clientes(self.db, q="cliente@example.com")[0].id,
+                self.cliente.id,
+            )
             self.assertEqual(cliente_crypto.migrate_plaintext_clientes(self.db), 0)
             cliente_raw_sem_recifrar = self.db.connection().exec_driver_sql(
                 "SELECT email FROM clientes WHERE id=?", (self.cliente.id,)
@@ -654,10 +774,12 @@ class EnvioFluxoTests(unittest.TestCase):
                 )
             self.assertEqual(backup.call_args.args[1], "Cliente Teste")
             self.assertEqual(
-                smtp_fluxo.call_args.kwargs["destinatario"], "fluxo@example.com"
+                smtp_fluxo.call_args.kwargs["destinatario"],
+                ["fluxo@example.com", "financeiro@example.com"],
             )
             self.assertEqual(
-                envio_processado.destinatario_email, "fluxo@example.com"
+                envio_processado.destinatario_email,
+                "fluxo@example.com, financeiro@example.com",
             )
             snapshot_processado_raw = self.db.connection().exec_driver_sql(
                 "SELECT destinatario_email FROM envios WHERE id=?",
@@ -694,22 +816,26 @@ class EnvioFluxoTests(unittest.TestCase):
 
             smtp.assert_called_once()
             self.assertEqual(
-                smtp.call_args.kwargs["destinatario"], "corrigido@example.com"
+                smtp.call_args.kwargs["destinatario"],
+                ["corrigido@example.com", "financeiro@example.com"],
             )
             self.assertEqual(
-                reenviado.destinatario_email, "corrigido@example.com"
+                reenviado.destinatario_email,
+                "corrigido@example.com, financeiro@example.com",
             )
             raw_reenvio = self.db.connection().exec_driver_sql(
                 "SELECT destinatario_email FROM envios WHERE id=?", (reenviado.id,)
             ).scalar_one()
             self.assertTrue(raw_reenvio.startswith(crypto.ENC_PREFIX))
             self.assertEqual(
-                crypto.decrypt_field(raw_reenvio), "corrigido@example.com"
+                crypto.decrypt_field(raw_reenvio),
+                "corrigido@example.com, financeiro@example.com",
             )
 
             saida_api = envios_router._envio_out(reenviado)
             self.assertEqual(
-                saida_api.destinatario_email, "corrigido@example.com"
+                saida_api.destinatario_email,
+                "corrigido@example.com, financeiro@example.com",
             )
             csv_response = envios_router.exportar_csv(
                 dias=30,

@@ -31,9 +31,11 @@ def listar_duplicados(db: Session) -> list[dict]:
         cnpj = _so_digitos(c.cnpj)
         if len(cnpj) >= 14:
             por_cnpj[cnpj].append(c)
-        email = (c.email or "").strip().lower()
-        if email:
-            por_email[email].append(c)
+        emails = [c.email, *c.destinatarios_adicionais]
+        for valor in emails:
+            email = (valor or "").strip().lower()
+            if email and c not in por_email[email]:
+                por_email[email].append(c)
 
     grupos: list[dict] = []
     vistos: set[frozenset[int]] = set()
