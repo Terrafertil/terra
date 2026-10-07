@@ -6,6 +6,11 @@ import { useUiStore } from '../stores/ui'
 import { sanitizeEmailHtml } from '../utils/sanitizeEmail'
 import { assuntoVinculado } from '../utils/assuntoEmail'
 import { renderizarAssunto, rotuloParcelamento } from '../utils/templateEmail'
+import {
+  erroNomeAnexoPdf,
+  montarNomeAnexoPdf,
+  normalizarExtensaoPdf,
+} from '../utils/nomeArquivoPdf'
 import EmailListInput from '../components/EmailListInput.vue'
 import CapaOrderSelector from '../components/CapaOrderSelector.vue'
 import {
@@ -93,6 +98,10 @@ const corpoEmailId = ref(null)
 const assinaturaId = ref(null)
 const arquivo = ref(null)
 const boleto = ref(null)
+const nomeArquivoApolice = ref('')
+const nomeArquivoBoleto = ref('')
+const nomeApoliceEditado = ref(false)
+const nomeBoletoEditado = ref(false)
 const enviando = ref(false)
 const demonstrando = ref(false)
 const erro = ref('')
@@ -152,6 +161,22 @@ const nomeDestino = computed(() => {
   if (criarNovo.value) return (novoCliente.nome || '').trim()
   return clienteSelecionado.value?.nome?.trim() || ''
 })
+
+const nomeApoliceAutomatico = computed(() =>
+  montarNomeAnexoPdf(nomeDestino.value, 'Apólice', numeroApolice.value),
+)
+
+const nomeBoletoAutomatico = computed(() =>
+  montarNomeAnexoPdf(nomeDestino.value, 'Boleto', numeroApolice.value),
+)
+
+const nomeApoliceFinal = computed(() =>
+  normalizarExtensaoPdf(nomeArquivoApolice.value || nomeApoliceAutomatico.value),
+)
+
+const nomeBoletoFinal = computed(() =>
+  normalizarExtensaoPdf(nomeArquivoBoleto.value || nomeBoletoAutomatico.value),
+)
 
 const mostrarCampoSenha = computed(
   () =>
@@ -259,6 +284,22 @@ watch(clienteId, () => {
   autoId.value = null
 })
 
+watch(
+  nomeApoliceAutomatico,
+  (nome) => {
+    if (!nomeApoliceEditado.value) nomeArquivoApolice.value = nome
+  },
+  { immediate: true },
+)
+
+watch(
+  nomeBoletoAutomatico,
+  (nome) => {
+    if (!nomeBoletoEditado.value) nomeArquivoBoleto.value = nome
+  },
+  { immediate: true },
+)
+
 watch(tipoCodigo, () => {
   capasIniciaisIds.value = [...(tipoSelecionado.value?.capas_iniciais_ids || [])]
   capasFinaisIds.value = [...(tipoSelecionado.value?.capas_finais_ids || [])]
@@ -357,12 +398,39 @@ function onArquivo(e) {
     analise.value = null
   }
 }
-function onBoleto(e)  { boleto.value  = e.target.files[0] || null }
+function onBoleto(e) {
+  boleto.value = e.target.files[0] || null
+  if (boleto.value && !nomeBoletoEditado.value) {
+    nomeArquivoBoleto.value = nomeBoletoAutomatico.value
+  }
+}
+
+function usarNomeAutomatico(tipo) {
+  if (tipo === 'apolice') {
+    nomeApoliceEditado.value = false
+    nomeArquivoApolice.value = nomeApoliceAutomatico.value
+    return
+  }
+  nomeBoletoEditado.value = false
+  nomeArquivoBoleto.value = nomeBoletoAutomatico.value
+}
+
+function finalizarEdicaoNome(tipo) {
+  if (tipo === 'apolice') {
+    if (!nomeArquivoApolice.value.trim()) return usarNomeAutomatico('apolice')
+    nomeArquivoApolice.value = normalizarExtensaoPdf(nomeArquivoApolice.value)
+    return
+  }
+  if (!nomeArquivoBoleto.value.trim()) return usarNomeAutomatico('boleto')
+  nomeArquivoBoleto.value = normalizarExtensaoPdf(nomeArquivoBoleto.value)
+}
 
 function montarFormData() {
   const fd = new FormData()
   if (arquivo.value) fd.append('arquivo', arquivo.value)
   if (boleto.value)  fd.append('boleto', boleto.value)
+  if (arquivo.value) fd.append('nome_arquivo_apolice', nomeApoliceFinal.value)
+  if (boleto.value)  fd.append('nome_arquivo_boleto', nomeBoletoFinal.value)
   if (criarNovo.value) {
     fd.append('cliente_novo', JSON.stringify(novoCliente))
   } else if (clienteId.value) {
@@ -400,6 +468,18 @@ function validar({ exigirArquivo }) {
   if (!(numeroApolice.value || '').trim()) {
     erro.value = 'Informe o número da apólice'
     return false
+  }
+  const erroNomeApolice = erroNomeAnexoPdf(nomeApoliceFinal.value)
+  if (erroNomeApolice) {
+    erro.value = `Nome do PDF da apólice: ${erroNomeApolice}`
+    return false
+  }
+  if (boleto.value) {
+    const erroNomeBoleto = erroNomeAnexoPdf(nomeBoletoFinal.value)
+    if (erroNomeBoleto) {
+      erro.value = `Nome do PDF do boleto: ${erroNomeBoleto}`
+      return false
+    }
   }
   if (destinatariosEnvio.value.length > 20) {
     erro.value = 'Use no máximo 20 destinatários no total'
@@ -631,6 +711,41 @@ onMounted(async () => {
           </div>
         </div>
 
+        <div class="nomes-anexos mt-2">
+          <div>
+            <label>Nome do PDF da apólice enviado *</label>
+            <div class="nome-anexo-edicao">
+              <input
+                v-model="nomeArquivoApolice"
+                maxlength="180"
+                required
+                @input="nomeApoliceEditado = true"
+                @blur="finalizarEdicaoNome('apolice')"
+              />
+              <button type="button" class="btn btn-ghost btn-sm" @click="usarNomeAutomatico('apolice')">
+                Usar nome + apólice
+              </button>
+            </div>
+            <small class="text-muted">Nome que o cliente verá no anexo e que será usado no backup.</small>
+          </div>
+          <div v-if="boleto">
+            <label>Nome do PDF do boleto enviado *</label>
+            <div class="nome-anexo-edicao">
+              <input
+                v-model="nomeArquivoBoleto"
+                maxlength="180"
+                required
+                @input="nomeBoletoEditado = true"
+                @blur="finalizarEdicaoNome('boleto')"
+              />
+              <button type="button" class="btn btn-ghost btn-sm" @click="usarNomeAutomatico('boleto')">
+                Usar nome + apólice
+              </button>
+            </div>
+            <small class="text-muted">O boleto continua como um anexo separado.</small>
+          </div>
+        </div>
+
         <h4 class="mt-4 mb-2">Dados da proposta</h4>
         <div class="row">
           <div>
@@ -736,7 +851,7 @@ onMounted(async () => {
           </div>
           <p class="ordem-pdf text-muted m-0 mt-2">
             Ordem final:
-            {{ [...nomesCapas(capasIniciaisIds), arquivo?.name || 'apólice.pdf', ...nomesCapas(capasFinaisIds)].join(' → ') }}
+            {{ [...nomesCapas(capasIniciaisIds), nomeApoliceFinal, ...nomesCapas(capasFinaisIds)].join(' → ') }}
           </p>
         </div>
 
@@ -829,9 +944,10 @@ onMounted(async () => {
           {{ [numeroProposta, itemSegurado, formaPagamento, rotuloParcelamento(parcelamento)].filter(Boolean).join(' · ') }}
         </p>
         <p>
-          <strong>PDF:</strong>
-          {{ capasIniciaisIds.length }} capa(s) antes · apólice · {{ capasFinaisIds.length }} capa(s) depois
+          <strong>PDF da apólice:</strong> {{ nomeApoliceFinal }}
+          ({{ capasIniciaisIds.length }} capa(s) antes · apólice · {{ capasFinaisIds.length }} capa(s) depois)
         </p>
+        <p v-if="boleto"><strong>PDF do boleto:</strong> {{ nomeBoletoFinal }}</p>
         <label style="display: flex; align-items: flex-start; gap: 0.5rem; font-weight: 500; margin-top: 1rem">
           <input v-model="confirmouEmail" type="checkbox" />
           Confirmo que todos os e-mails acima estão corretos
@@ -867,6 +983,8 @@ onMounted(async () => {
       <p>ID: <strong>{{ ultimoEnvio.id }}</strong></p>
       <p>Para: <strong>{{ destinatarioDoEnvio(ultimoEnvio) }}</strong></p>
       <p>Assunto: {{ ultimoEnvio.assunto_email || '—' }}</p>
+      <p>PDF da apólice: {{ ultimoEnvio.nome_arquivo_final || '—' }}</p>
+      <p v-if="ultimoEnvio.nome_boleto">PDF do boleto: {{ ultimoEnvio.nome_boleto }}</p>
       <p>
         Envio SMTP:
         <span class="badge" :class="ultimoEnvio.status">
@@ -937,6 +1055,14 @@ onMounted(async () => {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1rem;
 }
+.nomes-anexos {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+.nome-anexo-edicao { display: flex; gap: 0.5rem; align-items: center; }
+.nome-anexo-edicao input { flex: 1; }
+.nome-anexo-edicao button { white-space: nowrap; }
 .ordem-pdf { overflow-wrap: anywhere; }
 .confirm-email-list {
   padding: 0.65rem 0.65rem 0.65rem 2rem;
@@ -946,6 +1072,7 @@ onMounted(async () => {
   font-weight: 700;
 }
 @media (max-width: 850px) {
-  .capas-envio-grid { grid-template-columns: 1fr; }
+  .capas-envio-grid, .nomes-anexos { grid-template-columns: 1fr; }
+  .nome-anexo-edicao { align-items: stretch; flex-direction: column; }
 }
 </style>

@@ -56,6 +56,12 @@ FALHAS_ENTREGA_REENVIAVEIS = frozenset(
     }
 )
 FALHAS_ENTREGA_NAO_REENVIAVEIS = frozenset({"spam", "unsubscribed"})
+_CARACTERES_INVALIDOS_NOME_ARQUIVO = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_NOMES_RESERVADOS_WINDOWS = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
 
 
 def _normalizar_email_destinatario(email: str | None) -> str:
@@ -161,6 +167,52 @@ def _arquivo_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _parte_nome_arquivo(valor: str | None) -> str:
+    texto = unicodedata.normalize("NFKC", valor or "")
+    texto = _CARACTERES_INVALIDOS_NOME_ARQUIVO.sub(" ", texto)
+    return re.sub(r"\s+", " ", texto).strip(" .")
+
+
+def _nome_automatico_pdf(
+    *, cliente_nome: str | None, documento: str, numero_apolice: str | None
+) -> str:
+    cliente = _parte_nome_arquivo(cliente_nome)
+    rotulo = _parte_nome_arquivo(documento) or "Documento"
+    numero = _parte_nome_arquivo(numero_apolice)
+    prefixo = f"{cliente} - " if cliente else ""
+    sufixo = f" {numero}" if numero else ""
+    nome = f"{prefixo}{rotulo}{sufixo}"[:176].rstrip()
+    return f"{nome}.pdf"
+
+
+def _normalizar_nome_anexo_pdf(
+    valor: str | None,
+    *,
+    padrao: str,
+    campo: str,
+) -> str:
+    informado = bool((valor or "").strip())
+    nome = unicodedata.normalize("NFKC", (valor or padrao or "documento.pdf")).strip()
+    if informado and _CARACTERES_INVALIDOS_NOME_ARQUIVO.search(nome):
+        raise ValueError(
+            f'{campo} nao pode conter < > : " / \\ | ? * nem caracteres de controle'
+        )
+    if not informado:
+        nome = _CARACTERES_INVALIDOS_NOME_ARQUIVO.sub(" ", nome)
+        nome = re.sub(r"\s+", " ", nome).strip()
+    nome = nome.rstrip(" .")
+    if not nome or nome in {".", ".."}:
+        raise ValueError(f"{campo} deve ser informado")
+    if not nome.casefold().endswith(".pdf"):
+        nome = f"{nome}.pdf"
+    nome_base_windows = Path(nome).stem.split(".", 1)[0].upper()
+    if nome_base_windows in _NOMES_RESERVADOS_WINDOWS:
+        raise ValueError(f"{campo} usa um nome reservado pelo sistema")
+    if len(nome) > 180:
+        raise ValueError(f"{campo} deve ter no maximo 180 caracteres")
+    return nome
 
 
 def _chave_idempotencia(
@@ -584,11 +636,13 @@ def processar_envio(
     corpo_email_id: int | None = None,
     assinatura_id: int | None = None,
     nome_arquivo_original: str | None = None,
+    nome_arquivo_apolice: str | None = None,
     pdf_senha: str | None = None,
     usuario_envio: models.Usuario | None = None,
     arquivo_colocado_por: str | None = None,
     boleto_path: str | Path | None = None,
     boleto_nome_original: str | None = None,
+    nome_arquivo_boleto: str | None = None,
     destinatarios_adicionais: list[str] | None = None,
     forma_pagamento: str | None = None,
     parcelamento: int | None = None,
@@ -690,13 +744,34 @@ def processar_envio(
     snapshots_iniciais = capa_service.snapshots(capas_iniciais)
     snapshots_finais = capa_service.snapshots(capas_finais)
 
+    nome_final = _normalizar_nome_anexo_pdf(
+        nome_arquivo_apolice,
+        padrao=_nome_automatico_pdf(
+            cliente_nome=cliente.nome,
+            documento="Apólice",
+            numero_apolice=numero_apolice,
+        ),
+        campo="Nome do arquivo da apolice",
+    )
+    nome_boleto = None
+    if boleto and boleto.is_file():
+        nome_boleto = _normalizar_nome_anexo_pdf(
+            nome_arquivo_boleto,
+            padrao=_nome_automatico_pdf(
+                cliente_nome=cliente.nome,
+                documento="Boleto",
+                numero_apolice=numero_apolice,
+            ),
+            campo="Nome do arquivo do boleto",
+        )
+
     temp_desbloqueio: Path | None = None
     temp_mesclado: Path | None = None
     try:
         pdf_uso, temp_desbloqueio = pdf_service.garantir_pdf_desbloqueado(
             caminho_pdf, senha=pdf_service.normalizar_senha_pdf(pdf_senha)
         )
-        pdf_final, nome_final, temp_mesclado = _preparar_pdf_final(
+        pdf_final, _nome_final_preparado, temp_mesclado = _preparar_pdf_final(
             pdf_uso,
             capas_iniciais=capas_iniciais,
             capas_finais=capas_finais,
@@ -710,7 +785,7 @@ def processar_envio(
         tipo_codigo=tipo_codigo,
         nome_arquivo_original=nome_arquivo_original or caminho_pdf.name,
         nome_arquivo_final=nome_final,
-        nome_boleto=(Path(boleto_nome_original).name if boleto_nome_original else None),
+        nome_boleto=nome_boleto,
         numero_apolice=numero_apolice,
         forma_pagamento=forma_pagamento,
         parcelamento=parcelamento,
@@ -808,9 +883,7 @@ def processar_envio(
             assinatura_cid=cid,
         )
         anexos = [pdf_final]
-        nomes_anexos: list[str | None] = [
-            nome_final if temp_mesclado is not None else None
-        ]
+        nomes_anexos: list[str | None] = [envio.nome_arquivo_final]
         if boleto and boleto.is_file():
             anexos.append(boleto)
             nomes_anexos.append(envio.nome_boleto or "boleto.pdf")

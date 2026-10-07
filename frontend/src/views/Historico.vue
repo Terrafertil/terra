@@ -220,7 +220,7 @@ onMounted(carregar)
             <th>Tipo</th>
             <th>Cliente</th>
             <th>Destinatário do envio</th>
-            <th>Arquivo</th>
+            <th>Anexos enviados</th>
             <th>Apólice</th>
             <th>Envio SMTP</th>
             <th>Entrega</th>
@@ -241,7 +241,17 @@ onMounted(carregar)
                 Atual: {{ destinatarioAtualDoCliente(e) }}
               </div>
             </td>
-            <td>{{ e.nome_arquivo_original || '—' }}</td>
+            <td style="font-size: 0.85rem">
+              <strong>{{ e.nome_arquivo_final || e.nome_arquivo_original || '—' }}</strong>
+              <div v-if="e.nome_boleto">{{ e.nome_boleto }}</div>
+              <div
+                v-if="e.nome_arquivo_original && e.nome_arquivo_original !== e.nome_arquivo_final"
+                class="text-muted"
+                style="font-size: 0.75rem"
+              >
+                Original: {{ e.nome_arquivo_original }}
+              </div>
+            </td>
             <td>{{ e.numero_apolice || '—' }}</td>
             <td>
               <span class="badge" :class="e.status">{{ rotuloStatusEnvio(e.status) }}</span>

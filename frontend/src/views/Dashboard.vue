@@ -225,7 +225,7 @@ onUnmounted(() => {
           <tr v-for="e in ultimos" :key="e.id">
             <td>{{ e.id }}</td>
             <td><span class="badge" :class="e.tipo_envio">{{ e.tipo_envio }}</span></td>
-            <td>{{ e.nome_arquivo_original || e.nome_arquivo_final || '—' }}</td>
+            <td>{{ e.nome_arquivo_final || e.nome_arquivo_original || '—' }}</td>
             <td>{{ e.numero_apolice || '—' }}</td>
             <td><span class="badge" :class="e.status">{{ rotuloStatusEnvio(e.status) }}</span></td>
             <td>

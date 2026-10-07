@@ -197,12 +197,12 @@ onMounted(carregar)
           <CapaOrderSelector
             v-model="form.capas_iniciais_ids"
             :capas="capas"
-            label="Capas antes da apólice (padrão do FULL)"
+            label="Capas antes da apólice (padrão do tipo)"
           />
           <CapaOrderSelector
             v-model="form.capas_finais_ids"
             :capas="capas"
-            label="Capas depois da apólice (padrão do FULL)"
+            label="Capas depois da apólice (padrão do tipo)"
           />
         </div>
         <small class="text-muted">

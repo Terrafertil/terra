@@ -181,6 +181,63 @@ class EnvioFluxoTests(unittest.TestCase):
         self.assertFalse(primeiro.deduplicado)
         self.assertFalse(segundo.deduplicado)
 
+    def test_nomes_dos_anexos_sao_automaticos_e_editaveis(self):
+        boleto = self.temp_dir / "boleto-origem.pdf"
+        boleto.write_bytes(b"%PDF-1.4\nboleto")
+        stack, backup, smtp = self._patch_fluxo()
+        with stack:
+            envio = envio_service.processar_envio(
+                self.db,
+                cliente=self.cliente,
+                caminho_pdf=self.pdf,
+                tipo_envio="MANUAL",
+                numero_apolice="12345",
+                boleto_path=boleto,
+                nome_arquivo_apolice="Documento principal",
+                nome_arquivo_boleto="Cobranca final.PDF",
+            )
+
+        self.assertEqual(envio.nome_arquivo_final, "Documento principal.pdf")
+        self.assertEqual(envio.nome_boleto, "Cobranca final.PDF")
+        self.assertEqual(
+            [call.kwargs["nome_arquivo_destino"] for call in backup.call_args_list],
+            ["Documento principal.pdf", "Cobranca final.PDF"],
+        )
+        self.assertEqual(
+            smtp.call_args.kwargs["nomes_anexos"],
+            ["Documento principal.pdf", "Cobranca final.PDF"],
+        )
+
+        stack, _backup, smtp = self._patch_fluxo()
+        with stack:
+            automatico = envio_service.processar_envio(
+                self.db,
+                cliente=self.cliente,
+                caminho_pdf=self.pdf,
+                tipo_envio="MANUAL",
+                numero_apolice="67890",
+            )
+        self.assertEqual(
+            automatico.nome_arquivo_final,
+            "Cliente Teste - Apólice 67890.pdf",
+        )
+        self.assertEqual(
+            smtp.call_args.kwargs["nomes_anexos"],
+            ["Cliente Teste - Apólice 67890.pdf"],
+        )
+
+    def test_nome_de_anexo_inseguro_e_rejeitado(self):
+        stack, _backup, smtp = self._patch_fluxo()
+        with stack, self.assertRaisesRegex(ValueError, "nao pode conter"):
+            envio_service.processar_envio(
+                self.db,
+                cliente=self.cliente,
+                caminho_pdf=self.pdf,
+                tipo_envio="MANUAL",
+                nome_arquivo_apolice="../fora.pdf",
+            )
+        smtp.assert_not_called()
+
     def test_manual_e_full_herdam_assunto_salvo_do_tipo(self):
         corpo = models.CorpoEmail(
             nome="Corpo auto",
